@@ -228,6 +228,15 @@ Positionierung: {positionierung}
 Leistungen:
 {leistungen}
 
+Fachlicher Hintergrund (echtes Verkaufsargument, keine Erfindung):
+{hintergrund}
+Baue diesen Hintergrund in den Text ein - kurz, in einem Nebensatz, nie als
+eigener Absatz und nie angeberisch. Bei Architektur, Immobilien, Innenausbau,
+Handwerk und Hotellerie gehört er in jede Ansprache; sonst nur, wenn er zum
+Betrieb passt. Formuliere ihn jedes Mal anders ("wir kommen selbst aus der
+Architektur", "als Architekturstudenten im Master schauen wir auf Raum und
+Licht", …) - nicht denselben Satz wiederholen.
+
 Regeln für jeden Text:
 - Deutsch, österreichisches Geschäftsdeutsch. Die Anrede richtet sich nach dem
   Kanal (siehe Kanal-Auftrag ganz unten) - nicht selbst festlegen.
@@ -287,6 +296,7 @@ def _system(cfg):
         website=firma["website"],
         kontakt_email=firma.get("email", ""),
         absender=firma["absender"],
+        hintergrund=firma.get("hintergrund", ""),
         absender_hinweis="%s betreibt mit %s das Videostudio %s in %s"
         % (firma["absender"], firma["partner"], firma["name"], firma["ort"]),
     )

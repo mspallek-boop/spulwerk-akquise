@@ -162,15 +162,32 @@ def _saeubere_felder(daten):
     return {k: v for k, v in daten.items() if k in FELDER}
 
 
+# Felder, die beim Wiederfinden eines Leads verglichen werden.
+ABGLEICH_FELDER = ("kategorie", "branche", "strasse", "plz", "ort", "lat", "lon",
+                   "website", "telefon", "email", "instagram", "facebook")
+
+
+def _bekannte(conn):
+    """quelle_id -> vorhandener Lead (nur die Felder, die verglichen werden).
+
+    Die Suche prüft für jedes gefundene Objekt, ob es den Lead schon gibt. Über
+    die Netz-Schnittstelle wäre das eine Anfrage pro Objekt - bei 2000 Objekten
+    je Branche dauert das acht Minuten. Einmal alles holen kostet Sekunden.
+    """
+    if getattr(conn, "_bekannt", None) is None:
+        felder = "id,quelle_id," + ",".join(ABGLEICH_FELDER)
+        zeilen = conn.alle_seiten(
+            "%s?select=%s&quelle_id=not.is.null" % (LEADS, felder))
+        conn._bekannt = {str(z["quelle_id"]): z for z in zeilen}
+    return conn._bekannt
+
+
 def speichere_lead(conn, daten):
     """Legt einen Lead an oder füllt leere Felder eines bestehenden. (id, war_neu)"""
     quelle_id = daten.get("quelle_id")
     vorhanden = None
     if quelle_id:
-        treffer = conn.anfrage(
-            "%s?quelle_id=eq.%s&select=*" % (LEADS, urllib.parse.quote(str(quelle_id)))
-        )
-        vorhanden = treffer[0] if treffer else None
+        vorhanden = _bekannte(conn).get(str(quelle_id))
 
     if vorhanden is not None:
         aenderungen = {}
@@ -183,6 +200,7 @@ def speichere_lead(conn, daten):
             aenderungen["aktualisiert_am"] = jetzt()
             conn.anfrage("%s?id=eq.%s" % (LEADS, vorhanden["id"]), "PATCH",
                          aenderungen, {"Prefer": "return=minimal"})
+            vorhanden.update(aenderungen)
         return vorhanden["id"], False
 
     satz = _saeubere_felder(dict(daten))
@@ -191,7 +209,12 @@ def speichere_lead(conn, daten):
     satz["erstellt_am"] = jetzt()
     satz["aktualisiert_am"] = jetzt()
     zeilen = conn.anfrage(LEADS, "POST", [satz], {"Prefer": "return=representation"})
-    return (zeilen[0]["id"] if zeilen else None), True
+    neue_id = zeilen[0]["id"] if zeilen else None
+    if quelle_id and getattr(conn, "_bekannt", None) is not None:
+        merker = {"id": neue_id, "quelle_id": quelle_id}
+        merker.update({f: satz.get(f) for f in ABGLEICH_FELDER})
+        conn._bekannt[str(quelle_id)] = merker
+    return neue_id, True
 
 
 def aktualisiere_lead(conn, lead_id, **felder):

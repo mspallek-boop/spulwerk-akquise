@@ -150,6 +150,18 @@ KATEGORIEN = {
             ("office", "consulting"),
         ],
     },
+    # Eigene Branche statt unter "buero" mitzulaufen: Marlon und Leander
+    # studieren beide Architektur im Master - fachlich die naheliegendste
+    # Zielgruppe, und im Anschreiben ein echtes Argument.
+    "architektur": {
+        "label": "Architekturbüros & Planung",
+        "gewicht": 25,
+        "tags": [
+            ("office", "architect"),
+            ("craft", "architect"),
+            ("office", "engineer"),
+        ],
+    },
 }
 
 # Begriffe, die auf einen Wettbewerber hindeuten -> nicht anschreiben.
@@ -232,6 +244,14 @@ DEFAULT_CONFIG = {
             "Kreativstudio aus Wien für Video und Fotografie. "
             "Retro-Seele, digital gedreht: filmische Bildsprache, moderne 4K-Produktion."
         ),
+        # Fachlicher Hintergrund - taucht in den Ansprachen auf, weil er echtes
+        # Vertrauen schafft: wer Räume plant, filmt sie auch anders.
+        "hintergrund": (
+            "Marlon und Leander studieren beide Architektur im Master. "
+            "Sie haben ein geschultes Auge für Raum, Licht, Material und "
+            "Proportion - besonders hilfreich bei Architektur, Immobilien, "
+            "Innenausbau, Hotellerie und Handwerk."
+        ),
         "leistungen": [
             "Reels & Social Content (Lieferung in 48 Stunden)",
             "Imagefilm & Unternehmensvideo",
@@ -264,7 +284,7 @@ DEFAULT_CONFIG = {
     # Gmail-Postfach fuer die Entwuerfe. Das App-Passwort steht bewusst NICHT
     # hier, sondern in der Datei unter app_passwort_datei.
     "gmail": {
-        "adresse": "spuhlwerk.info@gmail.com",
+        "adresse": "spulwerk.com@gmail.com",
         "app_passwort_datei": ".secrets/gmail-app-passwort",
         "imap_server": "imap.gmail.com",
     },
