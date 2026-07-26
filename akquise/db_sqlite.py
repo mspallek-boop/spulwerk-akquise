@@ -375,11 +375,17 @@ def lade_json(wert, standard=None):
 
 
 def loesche_entwurf(conn, lead_id, kanal):
-    """Entfernt den (noch unbenutzten) Entwurf eines Kanals."""
-    conn.execute(
-        "DELETE FROM entwuerfe WHERE lead_id = ? AND kanal = ? AND verwendet = 0",
-        (int(lead_id), kanal),
-    )
+    """Entfernt den (noch unbenutzten) Entwurf eines Kanals.
+
+    Das `with conn:` ist hier wesentlich: ohne Transaktion verwirft sqlite3 die
+    Loeschung beim Schliessen der Verbindung wieder - mangelhafte Entwuerfe
+    blieben dann stehen und wanderten doch ins Postfach.
+    """
+    with conn:
+        conn.execute(
+            "DELETE FROM entwuerfe WHERE lead_id = ? AND kanal = ? AND verwendet = 0",
+            (_id(lead_id), kanal),
+        )
 
 
 def entwuerfe_frisch_seit(conn, kanaele, seit):
