@@ -13,9 +13,13 @@ import urllib.request
 
 from . import config, db
 
+# Mehrere Spiegel: die Hauptinstanz ist regelmaessig ueberlastet (HTTP 504).
+# Faellt einer aus, wandert die Abfrage weiter zum naechsten.
 OVERPASS_SERVER = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
 ]
 
 

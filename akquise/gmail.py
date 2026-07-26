@@ -22,6 +22,8 @@ FREMDE_DOMAINS = (
     "wordpress.org", "wordpress.com", "automattic.com", "wix.com",
     "squarespace.com", "jimdo.com", "shopify.com", "godaddy.com",
     "sentry.io", "example.com", "domain.at", "sensor.at",
+    "webador.de", "webador.com", "ionos.de", "strato.de", "hostinger.com",
+    "one.com", "weebly.com", "webnode.com", "site123.com",
 )
 
 STANDARD_DATEI = config.EXPORT_DIR / "gmail-warteschlange.json"

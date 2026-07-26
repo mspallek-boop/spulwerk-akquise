@@ -194,8 +194,12 @@ def analysiere_website(url, robots_beachten=True):
     befund["beschreibung"] = (parser.beschreibung or "").strip() or None
     befund["anzahl_bilder"] = parser.bilder
     befund["mobil_optimiert"] = parser.hat_viewport
+    # Nur echte Kaufsignale zaehlen. "shopify"/"woocommerce" allein steckt in
+    # vielen Themes, ohne dass es einen Shop gibt - das hat Architekturbueros
+    # faelschlich einen Onlineshop angedichtet.
     befund["shop"] = any(
-        s in klein for s in ("warenkorb", "add to cart", "shopify", "woocommerce", "zum shop")
+        s in klein for s in ("warenkorb", "in den warenkorb", "add to cart",
+                             "zum shop", "/cart", "/checkout", "jetzt kaufen")
     )
 
     quellen = " ".join(parser.iframes).lower()
