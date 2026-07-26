@@ -435,9 +435,9 @@ def erzeuge(min_score=None, limit=20, kanaele=KANAELE, nur_neue=True,
     kennzahlen = {"leads": 0, "entwuerfe": 0, "per_claude": 0, "budget_ende": None}
     for lead in kandidaten:
         if db.ist_gesperrt(conn, lead):
-            ausgabe("  [%d] %s - auf Sperrliste, übersprungen" % (lead["id"], lead["name"]))
+            ausgabe("  [%s] %s - auf Sperrliste, übersprungen" % (lead["id"], lead["name"]))
             continue
-        ausgabe("  [%d] %s (Score %d, Prio %s)"
+        ausgabe("  [%s] %s (Score %d, Prio %s)"
                 % (lead["id"], lead["name"][:40], lead["score"], score.prioritaet(lead["score"])))
         try:
             with conn:

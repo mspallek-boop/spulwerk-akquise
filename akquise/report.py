@@ -42,7 +42,7 @@ def dossier(conn, lead):
     recherche = db.lade_json(lead["recherche"], {})
     teile = []
     teile.append("=" * 70)
-    teile.append("%s  [Lead %d]" % (lead["name"], lead["id"]))
+    teile.append("%s  [Lead %s]" % (lead["name"], lead["id"]))
     teile.append("=" * 70)
     teile.append("Priorität:    %s (Score %d)" % (score.prioritaet(lead["score"]), lead["score"]))
     teile.append("Status:       %s" % lead["status"])
@@ -161,7 +161,7 @@ def exportiere_arbeitsliste(conn, leads_liste, pfad=None):
     pfad = pfad or (config.EXPORT_DIR / "arbeitsliste.md")
     zeilen = ["# Akquise-Arbeitsliste · %s" % db.heute(), ""]
     for lead in leads_liste:
-        zeilen.append("## [ ] %s (Lead %d, Prio %s, Score %d)"
+        zeilen.append("## [ ] %s (Lead %s, Prio %s, Score %d)"
                       % (lead["name"], lead["id"], score.prioritaet(lead["score"]), lead["score"]))
         zeilen.append("")
         zeilen.append("- Kontakt: %s | %s" % (lead["email"] or "-", lead["telefon"] or "-"))
@@ -228,7 +228,7 @@ def exportiere_instagram(conn, leads_liste, pfad=None):
             zeilen.append(dm[0]["text"])
             zeilen.append("```")
         else:
-            zeilen.append("- (noch kein DM-Entwurf – erst: ./spulwerk.py texten --lead %d)" % lead["id"])
+            zeilen.append("- (noch kein DM-Entwurf – erst: ./spulwerk.py texten --lead %s)" % lead["id"])
         zeilen.append("")
     with open(pfad, "w", encoding="utf-8") as datei:
         datei.write("\n".join(zeilen))
@@ -254,5 +254,5 @@ def uebersicht(conn):
         zeilen.append("")
         zeilen.append("FÄLLIGE WIEDERVORLAGEN: %d" % len(faellig))
         for lead in faellig[:10]:
-            zeilen.append("  [%d] %s (seit %s)" % (lead["id"], lead["name"], lead["wiedervorlage"]))
+            zeilen.append("  [%s] %s (seit %s)" % (lead["id"], lead["name"], lead["wiedervorlage"]))
     return "\n".join(zeilen)

@@ -380,6 +380,65 @@ class Fortschritt:
                                 "%s — %s" % (self.aktuell, text), prozent, self.erledigt)
 
 
+# Erfahrungswert aus den bisherigen Läufen: gut die Hälfte der analysierten
+# Websites führt zu einem Lead ab Score 55.
+QUALIFIZIERUNGSQUOTE = 0.5
+
+
+# Groqs Gratis-Tarif deckelt nicht die Anfragen, sondern die Tokens pro Tag
+# (200.000). Ein Lead kostet mit E-Mail und DM rund 4.700 - mehr als das geht
+# an keinem Tag, egal was die Anfragen-Kopfzeilen sagen.
+LEADS_PRO_TAG_MAX = 42
+
+
+def _textbudget(cfg, args):
+    """Wie viele Leads lassen sich heute Nacht überhaupt betexten?"""
+    if args.ohne_texten:
+        return 0
+    budget = args.text_limit or LEADS_PRO_TAG_MAX
+    if getattr(args, "budget", None) and config.anbieter(cfg) == "groq":
+        from akquise import llm
+        limit, rest = llm.groq_ratelimit(config.api_key(cfg), cfg["llm"]["modell"])
+        if limit and rest is not None:
+            offen = max(0, int(limit * args.budget) - (limit - rest))
+            budget = min(budget, max(0, offen // 2))
+    return min(budget, LEADS_PRO_TAG_MAX)
+
+
+def _bedarf(cfg, args, min_score):
+    """Der Lauf soll nicht mehr suchen und analysieren, als er danach auch
+    betexten kann - sonst wächst nur ein Berg unbearbeiteter Leads.
+
+    Rückgabe: (wie viele Websites analysieren, soll gesucht werden, Begründung)
+    """
+    budget = _textbudget(cfg, args)
+    conn = db.verbinde()
+    try:
+        # Nur die wirklich Qualifizierten zählen (Prio A/B) - die C-Leads
+        # sind Beifang und sollen die Suche nicht dauerhaft blockieren.
+        rueckstand = len([l for l in db.leads(conn, min_score=min_score)
+                          if not db.entwuerfe(conn, l["id"], "email")])
+        vorrat = len([l for l in db.leads(conn)
+                      if l["website"] and not l["angereichert_am"]])
+    finally:
+        conn.close()
+
+    if budget <= 0:
+        return 0, False, "Tagesbudget des Modells ist aufgebraucht"
+    if rueckstand >= budget:
+        return 0, False, ("%d qualifizierte Leads warten schon auf Text, "
+                          "das füllt das heutige Budget von %d" % (rueckstand, budget))
+
+    fehlend = budget - rueckstand
+    noetig = int(fehlend / QUALIFIZIERUNGSQUOTE) + 1
+    grenze = min(noetig, args.enrich_limit or noetig)
+    suchen = vorrat < noetig
+    grund = ("%d Leads im Rückstand, Budget %d -> %d neue Qualifizierte nötig, "
+             "dafür ~%d Websites analysieren (Vorrat: %d)"
+             % (rueckstand, budget, fehlend, grenze, vorrat))
+    return grenze, suchen, grund
+
+
 def _texten_schritt(cfg, args, min_score, melder=None):
     """Textet offene Leads, so weit das Tagesbudget des Modells reicht."""
     if args.ohne_texten:
@@ -512,8 +571,14 @@ def _sweep_lauf(args, lauf_id=None):
     melder.schritt("Gmail-Entwürfe")
     _gmail_schritt(cfg, min_score)
 
+    enrich_grenze, suchen_noetig, grund = _bedarf(cfg, args, min_score)
+    print("\n  Bedarf: %s" % grund)
+
     print("\n[3/6] Suche (%s) ..." % ", ".join(kategorien))
     melder.schritt("Suche")
+    if not suchen_noetig:
+        print("  Übersprungen - es liegen genug unbearbeitete Leads bereit.")
+        kategorien = []
     neu = 0
     for kategorie in kategorien:
         if zeit_um():
@@ -527,8 +592,11 @@ def _sweep_lauf(args, lauf_id=None):
     melder.schritt("Anreichern")
     if zeit_um():
         print("  Zeitgrenze erreicht - übersprungen.")
+    elif enrich_grenze <= 0:
+        print("  Übersprungen - %s." % grund)
     else:
-        enrich.reichere_an(limit=args.enrich_limit, pause=cfg["akquise"]["pause_sekunden"])
+        print("  Höchstens %d Websites (mehr bringt heute nichts)." % enrich_grenze)
+        enrich.reichere_an(limit=enrich_grenze, pause=cfg["akquise"]["pause_sekunden"])
 
     print("\n[5/6] Bewerten ...")
     melder.schritt("Bewerten")
@@ -848,7 +916,7 @@ def cmd_gmail(args):
         if s["unbrauchbar"]:
             print("  unbrauchbare Adresse:             %d" % len(s["unbrauchbar"]))
             for u in s["unbrauchbar"][:5]:
-                print("     [%d] %s -> %s" % (u["lead_id"], u["name"][:34], u["an"]))
+                print("     [%s] %s -> %s" % (u["lead_id"], u["name"][:34], u["an"]))
         print("\nDatei: %s" % gmail.STANDARD_DATEI)
 
     elif args.aktion == "warteschlange":
@@ -862,10 +930,10 @@ def cmd_gmail(args):
             print("%d mangelhafte Entwürfe verworfen (werden neu getextet):"
                   % len(verworfen))
             for v in verworfen:
-                print("  [%d] %s - %s"
+                print("  [%s] %s - %s"
                       % (v["lead_id"], v["name"][:38], ", ".join(v["gruende"])))
         for eintrag in eintraege[:5]:
-            print("  [%d] %s (Prio %s) -> %s"
+            print("  [%s] %s (Prio %s) -> %s"
                   % (eintrag["lead_id"], eintrag["name"][:38],
                      eintrag["prio"], eintrag["an"]))
         if len(eintraege) > 5:
