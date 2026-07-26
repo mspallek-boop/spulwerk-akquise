@@ -41,6 +41,7 @@ FELDER = (
     "facebook", "ansprechpartner", "status", "score", "signale", "recherche",
     "entwuerfe", "notizen", "wiedervorlage", "kontaktversuche", "erstellt_am",
     "aktualisiert_am", "angereichert_am", "gmail_am", "gmail_gesendet_am",
+    "instagram_am",
 )
 
 

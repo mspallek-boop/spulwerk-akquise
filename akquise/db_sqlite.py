@@ -49,7 +49,8 @@ def verbinde():
 # Nachtraeglich ergaenzte Spalten. Aeltere Datenbanken bekommen sie beim
 # ersten Verbinden automatisch - so bleibt ein Update ein reines Dateikopieren.
 NACHRUESTUNG = {
-    "leads": {"gmail_am": "TEXT", "gmail_gesendet_am": "TEXT"},
+    "leads": {"gmail_am": "TEXT", "gmail_gesendet_am": "TEXT",
+              "instagram_am": "TEXT"},
 }
 
 
@@ -93,7 +94,9 @@ CREATE TABLE IF NOT EXISTS leads (
     erstellt_am TEXT NOT NULL,
     aktualisiert_am TEXT NOT NULL,
     angereichert_am TEXT,
-    gmail_am TEXT
+    gmail_am TEXT,
+    gmail_gesendet_am TEXT,
+    instagram_am TEXT
 );
 
 CREATE TABLE IF NOT EXISTS kontakte (

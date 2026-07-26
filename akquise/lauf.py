@@ -79,14 +79,25 @@ def melde_start(cfg=None, quelle="mac", lauf_id=None):
     return zeilen[0]["id"] if zeilen else None
 
 
-def melde_schritt(cfg, lauf_id, schritt):
+def melde_schritt(cfg, lauf_id, schritt, fortschritt=None, erledigt=None):
+    """Aktueller Schritt, Fortschritt in Prozent und was schon fertig ist.
+
+    Damit kann das Portal einen Balken zeigen, statt nur "läuft". Fehler beim
+    Melden werden geschluckt - ein Lauf darf nicht an der Protokollierung
+    scheitern.
+    """
     if not lauf_id:
         return
+    daten = {"schritt": schritt}
+    if fortschritt is not None:
+        daten["fortschritt"] = max(0, min(100, int(fortschritt)))
+    if erledigt is not None:
+        daten["erledigt"] = erledigt
     try:
         _anfrage(cfg, "%s?id=eq.%d" % (TABELLE, lauf_id), "PATCH",
-                 {"schritt": schritt}, {"Prefer": "return=minimal"})
+                 daten, {"Prefer": "return=minimal"})
     except LaufFehler:
-        pass  # Ein Lauf darf nicht an der Protokollierung scheitern.
+        pass
 
 
 def melde_ende(cfg, lauf_id, zustand="fertig", meldung=None, kennzahlen=None):
@@ -95,6 +106,7 @@ def melde_ende(cfg, lauf_id, zustand="fertig", meldung=None, kennzahlen=None):
     try:
         _anfrage(cfg, "%s?id=eq.%d" % (TABELLE, lauf_id), "PATCH",
                  {"zustand": zustand, "beendet_am": _jetzt(), "schritt": None,
+                  "fortschritt": 100 if zustand == "fertig" else None,
                   "meldung": meldung, "kennzahlen": kennzahlen},
                  {"Prefer": "return=minimal"})
     except LaufFehler:

@@ -213,6 +213,11 @@ def cmd_status(args):
         felder["wiedervorlage"] = db.in_tagen(args.wiedervorlage)
 
     kontakt_status = ("kontaktiert", "nachgefasst")
+    if args.neuer_status in kontakt_status and args.kanal in ("dm", "instagram"):
+        felder["instagram_am"] = db.jetzt()
+    if args.neuer_status in kontakt_status and args.kanal == "email" and not lead["gmail_gesendet_am"]:
+        felder["gmail_gesendet_am"] = db.jetzt()
+
     with conn:
         if args.neuer_status in kontakt_status:
             felder["kontaktversuche"] = (lead["kontaktversuche"] or 0) + 1
@@ -335,7 +340,47 @@ def cmd_sweep(args):
         raise
 
 
-def _texten_schritt(cfg, args, min_score):
+class Fortschritt:
+    """Meldet dem Portal, wo der Lauf gerade steht.
+
+    Die Prozentwerte sind grobe Wegmarken - genau genug für einen Balken, und
+    innerhalb des Textens zählt sie zusätzlich die einzelnen Leads mit.
+    """
+
+    SCHRITTE = [
+        ("Texten (Rückstand)", 5, 30),
+        ("Gmail-Entwürfe", 30, 38),
+        ("Suche", 38, 60),
+        ("Anreichern", 60, 78),
+        ("Bewerten", 78, 84),
+        ("Portal-Sync", 84, 90),
+        ("Nachschlag", 90, 100),
+    ]
+
+    def __init__(self, cfg, lauf_id):
+        from akquise import lauf as lauf_modul
+        self.cfg, self.lauf_id, self.lauf = cfg, lauf_id, lauf_modul
+        self.erledigt = []
+        self.aktuell = None
+
+    def schritt(self, name):
+        if self.aktuell and self.aktuell not in self.erledigt:
+            self.erledigt.append(self.aktuell)
+        self.aktuell = name
+        start = dict((s[0], s[1]) for s in self.SCHRITTE).get(name, 0)
+        self.lauf.melde_schritt(self.cfg, self.lauf_id, name, start, self.erledigt)
+
+    def zwischenstand(self, text, anteil=0.0):
+        """anteil 0..1 innerhalb des laufenden Schritts."""
+        bereich = dict((s[0], (s[1], s[2])) for s in self.SCHRITTE).get(self.aktuell)
+        prozent = None
+        if bereich:
+            prozent = bereich[0] + (bereich[1] - bereich[0]) * max(0.0, min(1.0, anteil))
+        self.lauf.melde_schritt(self.cfg, self.lauf_id,
+                                "%s — %s" % (self.aktuell, text), prozent, self.erledigt)
+
+
+def _texten_schritt(cfg, args, min_score, melder=None):
     """Textet offene Leads, so weit das Tagesbudget des Modells reicht."""
     if args.ohne_texten:
         print("  Übersprungen (--ohne-texten)")
@@ -358,7 +403,18 @@ def _texten_schritt(cfg, args, min_score):
         return
     text_min = cfg["akquise"].get("text_min_score", min_score)
     print("  Ab Score %d (C-Leads nur mit analysierter Website) ..." % text_min)
-    outreach.erzeuge(min_score=text_min, limit=text_limit, nur_neue=True)
+
+    gezaehlt = {"n": 0}
+
+    def ausgabe(zeile):
+        print(zeile)
+        # Jede Lead-Zeile beginnt mit "  [" - daran zählen wir den Fortschritt.
+        if melder and zeile.startswith("  ["):
+            gezaehlt["n"] += 1
+            melder.zwischenstand("%d von max. %d Leads" % (gezaehlt["n"], text_limit),
+                                 gezaehlt["n"] / max(text_limit, 1))
+
+    outreach.erzeuge(min_score=text_min, limit=text_limit, nur_neue=True, ausgabe=ausgabe)
 
 
 def _gmail_schritt(cfg, min_score):
@@ -422,6 +478,7 @@ def _schlafen_legen():
 def _sweep_lauf(args, lauf_id=None):
     from akquise import lauf as lauf_modul
     cfg = config.lade_config()
+    melder = Fortschritt(cfg, lauf_id)
     stadt = args.stadt or cfg["akquise"]["stadt"]
     alle_kategorien = _kategorien_liste(args.kategorien) or list(config.KATEGORIEN)
     kategorien = _rotation(alle_kategorien, getattr(args, "rotation", 0))
@@ -448,15 +505,15 @@ def _sweep_lauf(args, lauf_id=None):
     # danach läuft über Stunden; bricht der Lauf ab (Ruhezustand, Netz), sind
     # die Entwürfe trotzdem schon da.
     print("\n[1/6] Texten (Rückstand aus den Vornächten) ...")
-    lauf_modul.melde_schritt(cfg, lauf_id, "Texten (Rückstand)")
-    _texten_schritt(cfg, args, min_score)
+    melder.schritt("Texten (Rückstand)")
+    _texten_schritt(cfg, args, min_score, melder)
 
     print("\n[2/6] Gmail-Entwürfe ...")
-    lauf_modul.melde_schritt(cfg, lauf_id, "Gmail-Entwürfe")
+    melder.schritt("Gmail-Entwürfe")
     _gmail_schritt(cfg, min_score)
 
     print("\n[3/6] Suche (%s) ..." % ", ".join(kategorien))
-    lauf_modul.melde_schritt(cfg, lauf_id, "Suche")
+    melder.schritt("Suche")
     neu = 0
     for kategorie in kategorien:
         if zeit_um():
@@ -467,14 +524,14 @@ def _sweep_lauf(args, lauf_id=None):
     print("  Neue Leads: %d" % neu)
 
     print("\n[4/6] Anreichern (neue Websites) ...")
-    lauf_modul.melde_schritt(cfg, lauf_id, "Anreichern")
+    melder.schritt("Anreichern")
     if zeit_um():
         print("  Zeitgrenze erreicht - übersprungen.")
     else:
         enrich.reichere_an(limit=args.enrich_limit, pause=cfg["akquise"]["pause_sekunden"])
 
     print("\n[5/6] Bewerten ...")
-    lauf_modul.melde_schritt(cfg, lauf_id, "Bewerten")
+    melder.schritt("Bewerten")
     score.bewerte_alle(min_score_qualifiziert=min_score)
 
     conn = db.verbinde()
@@ -485,7 +542,7 @@ def _sweep_lauf(args, lauf_id=None):
     conn.close()
 
     print("\n[6/6] Sync nach Supabase (Portal) ...")
-    lauf_modul.melde_schritt(cfg, lauf_id, "Portal-Sync")
+    melder.schritt("Portal-Sync")
     try:
         from akquise import sync
         s = sync.synchronisiere()
@@ -498,8 +555,9 @@ def _sweep_lauf(args, lauf_id=None):
     if zeit_um():
         print("\n[Nachschlag] Zeitgrenze erreicht - übersprungen.")
     else:
+        melder.schritt("Nachschlag")
         print("\n[Nachschlag] Neue Leads texten ...")
-        _texten_schritt(cfg, args, min_score)
+        _texten_schritt(cfg, args, min_score, melder)
         print("\n[Nachschlag] Gmail-Entwürfe ...")
         _gmail_schritt(cfg, min_score)
 
@@ -724,6 +782,32 @@ def cmd_wache(args):
     sweep_args.lauf_id = auftrag["id"]
     sweep_args.quelle = "mac"
     return cmd_sweep(sweep_args)
+
+
+def cmd_instagram(args):
+    """Hakt verschickte Instagram-DMs ab (die gehen ja per Hand raus)."""
+    conn = db.verbinde()
+    if not args.ids:
+        offen = [l for l in db.leads(conn, min_score=args.min_score)
+                 if l["instagram"] and not l["instagram_am"]]
+        print("%d qualifizierte Leads mit Instagram-Profil, noch nicht angeschrieben:"
+              % len(offen))
+        for lead in offen[:15]:
+            print("  [%s] %-34s %s" % (lead["id"], lead["name"][:34], lead["instagram"]))
+        if len(offen) > 15:
+            print("  ... und %d weitere" % (len(offen) - 15))
+        print("\nAbhaken: ./spulwerk.py instagram <ID> <ID> ...")
+    else:
+        db.markiere_gmail(conn, args.ids, feld="instagram_am")
+        for lead_id in args.ids:
+            lead = db.hole_lead(conn, lead_id)
+            if lead and lead["status"] in ("neu", "qualifiziert"):
+                db.aktualisiere_lead(conn, lead_id, status="kontaktiert",
+                                     kontaktversuche=(lead["kontaktversuche"] or 0) + 1)
+                db.protokolliere_kontakt(conn, lead_id, kanal="dm",
+                                         ergebnis="Instagram-DM verschickt")
+        print("%d Leads als per Instagram kontaktiert vermerkt." % len(args.ids))
+    conn.close()
 
 
 def cmd_saeubern(args):
@@ -1004,6 +1088,12 @@ def baue_parser():
     p.add_argument("--enrich-limit", type=int, default=200)
     p.add_argument("--budget", type=float, default=0.85)
     p.set_defaults(funktion=cmd_wache)
+
+    p = unter.add_parser("instagram",
+                         help="Verschickte Instagram-DMs abhaken (ohne IDs: offene anzeigen)")
+    p.add_argument("ids", nargs="*", help="Lead-IDs, deren DM raus ist")
+    p.add_argument("--min-score", type=int, default=55)
+    p.set_defaults(funktion=cmd_instagram)
 
     p = unter.add_parser("saeubern",
                          help="Alle Entwürfe nachträglich prüfen (Jargon, falsche Domains)")

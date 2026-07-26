@@ -83,6 +83,7 @@ def _row(lead, entwuerfe):
         "erstellt_am": lead["erstellt_am"],
         "aktualisiert_am": lead["aktualisiert_am"],
         "angereichert_am": lead["angereichert_am"],
+        "instagram_am": lead["instagram_am"],
     }
 
 
