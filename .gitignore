@@ -1,0 +1,15 @@
+# Geheimnisse - niemals einchecken
+.anthropic_key
+.gemini_key
+.groq_key
+.secrets/
+config.json
+
+# Daten und Ausgaben
+daten/
+entwuerfe/
+export/
+
+# Python
+__pycache__/
+*.pyc

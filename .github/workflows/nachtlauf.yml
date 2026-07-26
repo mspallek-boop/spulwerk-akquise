@@ -1,0 +1,50 @@
+name: Nachtlauf
+
+# 20:00 Wien. GitHub rechnet in UTC, Wien ist im Sommer UTC+2, im Winter UTC+1 -
+# deshalb zwei Einträge; der Lauf ist idempotent, ein zusätzlicher Start schadet
+# nicht (die Lauf-Sperre und die Dubletten-Prüfung fangen das ab).
+on:
+  schedule:
+    - cron: "0 18 * * *"   # Sommerzeit  (MESZ)
+    - cron: "0 19 * * *"   # Winterzeit  (MEZ)
+  workflow_dispatch:        # Knopf im Portal / in GitHub
+
+concurrency:
+  group: spulwerk-nachtlauf
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      AKQUISE_DB: supabase                                   # Datenbank ist das Portal
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GMAIL_APP_PASSWORT: ${{ secrets.GMAIL_APP_PASSWORT }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Zugänge prüfen
+        run: |
+          test -n "$SUPABASE_SERVICE_KEY" || { echo "SUPABASE_SERVICE_KEY fehlt"; exit 1; }
+          test -n "$GROQ_API_KEY"         || { echo "GROQ_API_KEY fehlt"; exit 1; }
+          test -n "$GMAIL_APP_PASSWORT"   || echo "Hinweis: ohne GMAIL_APP_PASSWORT werden keine Entwürfe abgelegt"
+          python3 -c "from akquise import db; print('Backend:', db.BACKEND)"
+
+      - name: Sweep
+        run: |
+          python3 spulwerk.py sweep \
+            --quelle github \
+            --rotation 4 \
+            --max-minuten 40 \
+            --enrich-limit 200 \
+            --budget 0.85
+
+      - name: Kurzbericht
+        if: always()
+        run: python3 spulwerk.py gmail status || true
