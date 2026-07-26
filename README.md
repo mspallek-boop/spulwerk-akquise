@@ -51,11 +51,39 @@ texten**. Danach im Dashboard durchsehen oder per CLI exportieren.
 | `sweep` | Kompletter Durchlauf über alle Branchen (idempotent, für nachts) |
 | `zeitplan einrichten --stunde 20` | Täglichen Sweep als macOS-Job (launchd) |
 | `sync` | Leads + Entwürfe ins Portal (Supabase) übertragen |
-| `gmail warteschlange --limit 40` | Fällige E-Mail-Entwürfe für Gmail bereitstellen |
-| `gmail fertig 12 34` | Angelegte Gmail-Entwürfe abhaken |
-| `gmail status` | Wie viele A/B-Leads schon im Postfach liegen |
+| `gmail push` | Fällige Entwürfe selbst ins Gmail-Postfach legen (IMAP) |
+| `gmail abgleich` | Postfach lesen: was liegt im Entwurf, was ist versendet |
+| `gmail status` | Zahlen fürs Postfach |
+| `gmail warteschlange --limit 40` | Nur die Datei schreiben (für den Claude-Task) |
+| `gmail fertig 12 34` | Angelegte Entwürfe abhaken |
+| `wache` | Im Portal angeforderten Lauf abholen und starten |
+| `saeubern` | Alle Entwürfe nachträglich prüfen (Jargon, falsche Domains) |
 
 Jeder Befehl kennt `--help`.
+
+## Wo die Daten liegen
+
+Zwei austauschbare Datenschichten mit gleicher Schnittstelle:
+
+| | lokal | Cloud |
+|---|---|---|
+| Backend | SQLite (`daten/akquise.db`) | Supabase/Postgres (Portal-Datenbank) |
+| Umschalten | Standard | `AKQUISE_DB=supabase` oder `config.json` → `datenbank.backend` |
+| Lead-ID | fortlaufende Zahl | UUID |
+| Entwürfe | eigene Tabelle | JSON-Spalte am Lead |
+
+Der Nachtlauf in GitHub Actions (`.github/workflows/nachtlauf.yml`) arbeitet
+auf Supabase, weil ein Cloud-Läufer keine Platte behält. Nötige Secrets:
+`GROQ_API_KEY`, `GMAIL_APP_PASSWORT`, `SUPABASE_SERVICE_KEY`.
+
+## Postfach
+
+Das Werkzeug legt Entwürfe direkt per IMAP im Gmail-Konto
+**spulwerk.com@gmail.com** ab (App-Passwort in `.secrets/gmail-app-passwort`
+oder als Umgebungsvariable `GMAIL_APP_PASSWORT`). Was schon im Entwurfsordner
+liegt oder bereits versendet wurde, wird übersprungen — dieselbe Adresse
+bekommt nie zwei Mails. `gmail abgleich` liest den Ist-Zustand zurück und setzt
+versendete Leads auf „kontaktiert".
 
 `texten` und `sweep` sperren sich gegenseitig über `daten/lauf.lock` – zwei
 gleichzeitige Läufe würden das Minutenlimit von Groq sprengen und statt
