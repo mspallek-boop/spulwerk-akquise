@@ -17,6 +17,7 @@ Unterschiede, die man kennen muss:
 """
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -125,7 +126,7 @@ class Verbindung:
             raise DbFehler("Zählen fehlgeschlagen: %s" % fehler)
         return int(bereich.rsplit("/", 1)[-1]) if "/" in bereich else 0
 
-    def anfrage(self, pfad, methode="GET", koerper=None, extra=None):
+    def anfrage(self, pfad, methode="GET", koerper=None, extra=None, versuche=3):
         daten = json.dumps(koerper).encode("utf-8") if koerper is not None else None
         kopf = {
             "apikey": self.key,
@@ -136,15 +137,24 @@ class Verbindung:
         anfrage = urllib.request.Request(
             "%s/rest/v1/%s" % (self.url, pfad), data=daten, headers=kopf, method=methode
         )
-        try:
-            with urllib.request.urlopen(anfrage, timeout=60) as antwort:
-                roh = antwort.read().decode("utf-8")
-                return json.loads(roh) if roh.strip() else None
-        except urllib.error.HTTPError as fehler:
-            text = fehler.read().decode("utf-8", "replace")[:300]
-            raise DbFehler("Supabase %s bei %s: %s" % (fehler.code, pfad, text))
-        except Exception as fehler:
-            raise DbFehler("Verbindung zu Supabase fehlgeschlagen: %s" % fehler)
+        # Netzfehler sind unterwegs normal (Verbindungsabbrüche, kurze
+        # Aussetzer). Ein Lauf soll daran nicht sterben.
+        for versuch in range(versuche):
+            try:
+                with urllib.request.urlopen(anfrage, timeout=60) as antwort:
+                    roh = antwort.read().decode("utf-8")
+                    return json.loads(roh) if roh.strip() else None
+            except urllib.error.HTTPError as fehler:
+                text = fehler.read().decode("utf-8", "replace")[:300]
+                if fehler.code in (429, 500, 502, 503, 504) and versuch < versuche - 1:
+                    time.sleep(2 * (versuch + 1))
+                    continue
+                raise DbFehler("Supabase %s bei %s: %s" % (fehler.code, pfad, text))
+            except Exception as fehler:
+                if versuch < versuche - 1:
+                    time.sleep(2 * (versuch + 1))
+                    continue
+                raise DbFehler("Verbindung zu Supabase fehlgeschlagen: %s" % fehler)
 
 
 def verbinde():
@@ -449,3 +459,23 @@ def gmail_zahlen(conn, min_score, erledigt_status):
 
 def anzahl_leads(conn):
     return conn.zaehle("%s?select=id" % LEADS)
+
+
+def aktualisiere_viele(conn, zeilen, blockgroesse=500):
+    """Schreibt viele Leads auf einmal zurueck.
+
+    Ein Upsert ginge nicht: PostgREST wuerde die Zeilen als Neuanlage
+    behandeln und an den Pflichtfeldern scheitern. Deshalb eine
+    Datenbankfunktion, die gezielt aktualisiert - ein Aufruf je Block statt
+    einer Anfrage je Lead.
+    """
+    zeilen = [dict(z) for z in zeilen if z.get("id")]
+    if not zeilen:
+        return 0
+    geschrieben = 0
+    for start in range(0, len(zeilen), blockgroesse):
+        block = [{k: (str(v) if k == "id" else v) for k, v in z.items()}
+                 for z in zeilen[start:start + blockgroesse]]
+        conn.anfrage("rpc/akquise_leads_aktualisieren", "POST", {"daten": block})
+        geschrieben += len(block)
+    return geschrieben

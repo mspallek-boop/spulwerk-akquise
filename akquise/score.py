@@ -131,29 +131,38 @@ def prioritaet(score):
 
 
 def bewerte_alle(min_score_qualifiziert=55, ausgabe=print):
-    """Bewertet alle Leads neu und hebt gute auf Status 'qualifiziert'."""
+    """Bewertet alle Leads neu und hebt gute auf Status 'qualifiziert'.
+
+    Geschrieben wird nur, was sich wirklich geaendert hat, und das in Bloecken:
+    Ueber die Netz-Schnittstelle waere eine Anfrage je Lead stundenlang
+    unterwegs und braeche unterwegs ab.
+    """
     conn = db.verbinde()
     alle = db.leads(conn)
-    kennzahlen = {"bewertet": 0, "A": 0, "B": 0, "C": 0, "D": 0, "qualifiziert": 0}
+    kennzahlen = {"bewertet": 0, "A": 0, "B": 0, "C": 0, "D": 0, "qualifiziert": 0,
+                  "geaendert": 0}
+    aenderungen = []
 
-    with conn:
-        for lead in alle:
-            score, signale = bewerte_lead(lead)
-            felder = {
-                "score": score,
-                "signale": "\n".join(signale),
-            }
-            # Nur frische Leads automatisch qualifizieren - laufende Deals
-            # behalten ihren Status.
-            if lead["status"] in ("neu", "qualifiziert"):
-                felder["status"] = (
-                    "qualifiziert" if score >= min_score_qualifiziert else "neu"
-                )
-                if felder["status"] == "qualifiziert":
-                    kennzahlen["qualifiziert"] += 1
-            db.aktualisiere_lead(conn, lead["id"], **felder)
-            kennzahlen["bewertet"] += 1
-            kennzahlen[prioritaet(score)] += 1
+    for lead in alle:
+        punkte, signale = bewerte_lead(lead)
+        text = "\n".join(signale)
+        neuer_status = lead["status"]
+        # Nur frische Leads automatisch qualifizieren - laufende Deals
+        # behalten ihren Status.
+        if lead["status"] in ("neu", "qualifiziert"):
+            neuer_status = ("qualifiziert" if punkte >= min_score_qualifiziert else "neu")
+            if neuer_status == "qualifiziert":
+                kennzahlen["qualifiziert"] += 1
 
+        if (punkte != lead["score"] or text != (lead["signale"] or "")
+                or neuer_status != lead["status"]):
+            aenderungen.append({"id": lead["id"], "score": punkte, "signale": text,
+                                "status": neuer_status})
+        kennzahlen["bewertet"] += 1
+        kennzahlen[prioritaet(punkte)] += 1
+
+    if aenderungen:
+        db.aktualisiere_viele(conn, aenderungen)
+        kennzahlen["geaendert"] = len(aenderungen)
     conn.close()
     return kennzahlen

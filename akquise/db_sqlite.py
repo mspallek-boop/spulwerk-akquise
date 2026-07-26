@@ -458,3 +458,19 @@ def gmail_zahlen(conn, min_score, erledigt_status):
 
 def anzahl_leads(conn):
     return conn.execute("SELECT COUNT(*) c FROM leads").fetchone()["c"]
+
+
+def aktualisiere_viele(conn, zeilen, blockgroesse=500):
+    """Schreibt viele Leads in einer Transaktion zurueck."""
+    zeilen = [dict(z) for z in zeilen if z.get("id")]
+    if not zeilen:
+        return 0
+    jetzt_zeit = jetzt()
+    with conn:
+        for z in zeilen:
+            felder = {k: v for k, v in z.items() if k != "id"}
+            felder["aktualisiert_am"] = jetzt_zeit
+            satz = ", ".join("%s = ?" % f for f in felder)
+            conn.execute("UPDATE leads SET %s WHERE id = ?" % satz,
+                         list(felder.values()) + [_id(z["id"])])
+    return len(zeilen)
