@@ -1,4 +1,4 @@
-name: Nachtlauf
+name: Nachschub
 
 # 20:00 Wien. GitHub rechnet in UTC, Wien ist im Sommer UTC+2, im Winter UTC+1 -
 # deshalb zwei Einträge; der Lauf ist idempotent, ein zusätzlicher Start schadet
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:        # Knopf im Portal / in GitHub
 
 concurrency:
-  group: spulwerk-nachtlauf
+  group: spulwerk-nachschub
   cancel-in-progress: false
 
 jobs:

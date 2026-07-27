@@ -357,21 +357,30 @@ class Fortschritt:
         ("Nachschlag", 90, 100),
     ]
 
+    # Beim Anreichern kommt alle zwei Sekunden eine Website - so oft muss das
+    # Portal nichts erfahren, es sieht ohnehin nur alle fünf Sekunden nach.
+    MELDEPAUSE = 4.0
+
     def __init__(self, cfg, lauf_id):
         from akquise import lauf as lauf_modul
         self.cfg, self.lauf_id, self.lauf = cfg, lauf_id, lauf_modul
         self.erledigt = []
         self.aktuell = None
+        self.zuletzt = 0.0
 
     def schritt(self, name):
         if self.aktuell and self.aktuell not in self.erledigt:
             self.erledigt.append(self.aktuell)
         self.aktuell = name
         start = dict((s[0], s[1]) for s in self.SCHRITTE).get(name, 0)
+        self.zuletzt = time.monotonic()
         self.lauf.melde_schritt(self.cfg, self.lauf_id, name, start, self.erledigt)
 
     def zwischenstand(self, text, anteil=0.0):
         """anteil 0..1 innerhalb des laufenden Schritts."""
+        if anteil < 1.0 and time.monotonic() - self.zuletzt < self.MELDEPAUSE:
+            return
+        self.zuletzt = time.monotonic()
         bereich = dict((s[0], (s[1], s[2])) for s in self.SCHRITTE).get(self.aktuell)
         prozent = None
         if bereich:
@@ -580,12 +589,16 @@ def _sweep_lauf(args, lauf_id=None):
         print("  Übersprungen - es liegen genug unbearbeitete Leads bereit.")
         kategorien = []
     neu = 0
-    for kategorie in kategorien:
+    for nummer, kategorie in enumerate(kategorien, 1):
         if zeit_um():
             print("  Zeitgrenze erreicht - restliche Branchen kommen morgen dran.")
             break
+        melder.zwischenstand("Branche %d von %d: %s" % (nummer, len(kategorien), kategorie),
+                             (nummer - 1) / len(kategorien))
         k = discover.finde([kategorie], stadt=stadt, nur_mit_website=args.nur_website)
         neu += k["neu"]
+        melder.zwischenstand("%d von %d Branchen, %d neue Leads"
+                             % (nummer, len(kategorien), neu), nummer / len(kategorien))
     print("  Neue Leads: %d" % neu)
 
     print("\n[4/6] Anreichern (neue Websites) ...")
@@ -596,7 +609,19 @@ def _sweep_lauf(args, lauf_id=None):
         print("  Übersprungen - %s." % grund)
     else:
         print("  Höchstens %d Websites (mehr bringt heute nichts)." % enrich_grenze)
-        enrich.reichere_an(limit=enrich_grenze, pause=cfg["akquise"]["pause_sekunden"])
+        # Jede geprüfte Website meldet sich - so bewegt sich die Live-Ansicht
+        # auch in dem Schritt, der am längsten dauert.
+        gezaehlt = {"n": 0}
+
+        def ausgabe(zeile):
+            print(zeile)
+            if zeile.startswith("  ["):
+                gezaehlt["n"] += 1
+                melder.zwischenstand("%d von %d Websites" % (gezaehlt["n"], enrich_grenze),
+                                     gezaehlt["n"] / max(enrich_grenze, 1))
+
+        enrich.reichere_an(limit=enrich_grenze, pause=cfg["akquise"]["pause_sekunden"],
+                           ausgabe=ausgabe)
 
     print("\n[5/6] Bewerten ...")
     melder.schritt("Bewerten")
@@ -1135,9 +1160,9 @@ def baue_parser():
     p.add_argument("--stunde", type=int, default=7, help="Startstunde 0-23 (Standard 7)")
     p.add_argument("--minute", type=int, default=0)
     p.add_argument("--enrich-limit", type=int, default=200,
-                   help="Max. Websites pro Nachtlauf (Standard 200 ≈ 7 Minuten)")
+                   help="Max. Websites pro Nachschub-Lauf (Standard 200 ≈ 7 Minuten)")
     p.add_argument("--budget", type=float, default=0.85,
-                   help="Groq-Tageslimit-Anteil pro Nachtlauf (Standard 0.85 = 85%%)")
+                   help="Groq-Tageslimit-Anteil pro Nachschub-Lauf (Standard 0.85 = 85%%)")
     p.add_argument("--rotation", type=int, default=4, metavar="ANZAHL",
                    help="Branchen je Nacht (Standard 4, rotiert über die Woche)")
     p.add_argument("--max-minuten", type=int, default=40,

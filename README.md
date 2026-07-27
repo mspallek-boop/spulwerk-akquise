@@ -72,7 +72,7 @@ Zwei austauschbare Datenschichten mit gleicher Schnittstelle:
 | Lead-ID | fortlaufende Zahl | UUID |
 | Entwürfe | eigene Tabelle | JSON-Spalte am Lead |
 
-Der Nachtlauf in GitHub Actions (`.github/workflows/nachtlauf.yml`) arbeitet
+Der Nachschub-Lauf in GitHub Actions (`.github/workflows/nachschub.yml`) arbeitet
 auf Supabase, weil ein Cloud-Läufer keine Platte behält. Nötige Secrets:
 `GROQ_API_KEY`, `GMAIL_APP_PASSWORT`, `SUPABASE_SERVICE_KEY`.
 
@@ -90,7 +90,7 @@ gleichzeitige Läufe würden das Minutenlimit von Groq sprengen und statt
 KI-Texten Vorlagen liefern. Stürzt ein Lauf ab, kann die Lock-Datei gelöscht
 werden.
 
-## Nachtlauf und Gmail-Entwürfe
+## Nachschub und Gmail-Entwürfe
 
 Der eingerichtete Zeitplan startet **täglich um 20:00 Uhr** einen `sweep`
 (`caffeinate -i` hält den Mac dabei wach). Am Ende schreibt der Sweep die
