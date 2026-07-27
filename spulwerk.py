@@ -323,8 +323,16 @@ def cmd_sweep(args):
     lauf_id = None
     try:
         lauf.raeume_verwaiste_auf(cfg)
+        # Hat jemand im Portal auf den Knopf gedrueckt, uebernimmt dieser Lauf
+        # den offenen Auftrag, statt eine zweite Zeile anzulegen. Sonst bleibt
+        # die Anforderung fuer immer auf "angefordert" stehen und das Portal
+        # haelt den Startknopf gesperrt.
+        gewuenscht = getattr(args, "lauf_id", None)
+        if not gewuenscht:
+            offen = lauf.offene_anforderung(cfg)
+            gewuenscht = offen["id"] if offen else None
         lauf_id = lauf.melde_start(cfg, quelle=getattr(args, "quelle", "mac"),
-                                   lauf_id=getattr(args, "lauf_id", None))
+                                   lauf_id=gewuenscht)
     except Exception as fehler:
         print("Hinweis: Laufprotokoll nicht erreichbar (%s)" % fehler)
 

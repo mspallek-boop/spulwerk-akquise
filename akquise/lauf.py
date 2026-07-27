@@ -27,6 +27,12 @@ TABELLE = "akquise_lauf"
 # Ein Lauf, der ewig "laeuft", ist in Wahrheit abgestürzt (Ruhezustand, Absturz).
 VERWAIST_NACH_MINUTEN = 120
 
+# Ein Auftrag aus dem Portal wird binnen Minuten abgeholt. Liegt er länger da,
+# ist der Lauf gar nicht erst angesprungen (z. B. Workflow abgebrochen, falscher
+# Schlüssel) — dann muss er verfallen, sonst hält er den Startknopf für immer
+# gesperrt. Genau das ist am 26.07.2026 passiert.
+AUFTRAG_VERFAELLT_NACH_MINUTEN = 90
+
 
 class LaufFehler(Exception):
     pass
@@ -141,16 +147,33 @@ def letzte(cfg=None, anzahl=5):
 
 
 def raeume_verwaiste_auf(cfg=None):
-    """Läufe, die seit Stunden 'laeuft' melden, sind abgestürzt (z. B. weil der
-    Mac eingeschlafen ist). Die werden ehrlich als abgebrochen markiert."""
+    """Zwei Sorten Leichen wegräumen, damit das Portal nicht lügt:
+
+    1. Läufe, die seit Stunden 'laeuft' melden - abgestürzt (Ruhezustand, Netz).
+    2. Aufträge, die nie jemand abgeholt hat - der Lauf ist nicht angesprungen.
+       Ohne das bleibt der Startknopf im Portal für immer gesperrt.
+    """
     cfg = cfg or config.lade_config()
-    grenze = (datetime.now(timezone.utc)
-              - timedelta(minutes=VERWAIST_NACH_MINUTEN)).isoformat()
+    jetzt = datetime.now(timezone.utc)
+
+    grenze = (jetzt - timedelta(minutes=VERWAIST_NACH_MINUTEN)).isoformat()
     pfad = "%s?zustand=eq.laeuft&gestartet_am=lt.%s" % (TABELLE, grenze)
     try:
         _anfrage(cfg, pfad, "PATCH",
                  {"zustand": "abgebrochen",
                   "meldung": "Kein Lebenszeichen mehr - vermutlich Ruhezustand oder Absturz.",
+                  "beendet_am": _jetzt()},
+                 {"Prefer": "return=minimal"})
+    except LaufFehler:
+        pass
+
+    alt = (jetzt - timedelta(minutes=AUFTRAG_VERFAELLT_NACH_MINUTEN)).isoformat()
+    pfad = "%s?zustand=eq.angefordert&angefordert_am=lt.%s" % (TABELLE, alt)
+    try:
+        _anfrage(cfg, pfad, "PATCH",
+                 {"zustand": "abgebrochen",
+                  "meldung": "Auftrag wurde nicht abgeholt - der Lauf ist nicht "
+                             "angesprungen (siehe GitHub Actions).",
                   "beendet_am": _jetzt()},
                  {"Prefer": "return=minimal"})
     except LaufFehler:

@@ -29,12 +29,29 @@ jobs:
         with:
           python-version: "3.12"
 
+      # "gesetzt" reicht nicht: ein ABGELAUFENER Supabase-Key kam bis hierher
+      # durch und liess erst den Sweep sterben (26.07.2026, drei Laeufe in
+      # Folge). Deshalb ein echter Testzugriff, bevor irgendetwas anfaengt.
       - name: Zugänge prüfen
         run: |
           test -n "$SUPABASE_SERVICE_KEY" || { echo "SUPABASE_SERVICE_KEY fehlt"; exit 1; }
           test -n "$GROQ_API_KEY"         || { echo "GROQ_API_KEY fehlt"; exit 1; }
           test -n "$GMAIL_APP_PASSWORT"   || echo "Hinweis: ohne GMAIL_APP_PASSWORT werden keine Entwürfe abgelegt"
           python3 -c "from akquise import db; print('Backend:', db.BACKEND)"
+          python3 - <<'PY'
+          import sys
+          from akquise import config, db
+          try:
+              conn = db.verbinde()
+              print("Supabase antwortet, %d Leads in der Datenbank." % db.anzahl_leads(conn))
+              conn.close()
+          except Exception as fehler:
+              print("::error::Supabase lehnt den Zugang ab: %s" % fehler)
+              print("Meist ist SUPABASE_SERVICE_KEY veraltet — neuen Key aus dem")
+              print("Supabase-Dashboard (Project Settings -> API keys) in die")
+              print("Repository-Secrets eintragen.")
+              sys.exit(1)
+          PY
 
       - name: Sweep
         run: |
