@@ -72,7 +72,7 @@ def _namensserver():
     return "1.1.1.1"
 
 
-def _dns_frage(domain, typ):
+def _dns_frage(domain, typ, server=None):
     """Minimale DNS-Anfrage über UDP. Rückgabe: Anzahl der Antworteinträge.
 
     Kein externes Paket - das Werkzeug kommt bewusst mit der Standardbibliothek
@@ -87,7 +87,7 @@ def _dns_frage(domain, typ):
     verbindung = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     verbindung.settimeout(DNS_ZEITLIMIT)
     try:
-        verbindung.sendto(paket, (_namensserver(), 53))
+        verbindung.sendto(paket, (server or _namensserver(), 53))
         antwort, _ = verbindung.recvfrom(2048)
     finally:
         verbindung.close()
@@ -108,39 +108,38 @@ def hat_mailserver(domain):
     """Nimmt die Domain überhaupt Post an? (MX, ersatzweise A - so wie ein
     Mailserver es auch versucht.)
 
-    Bei Netzproblemen wird im Zweifel `True` geliefert: eine wacklige Leitung
-    darf keine gültigen Adressen aussortieren.
+    Gefragt werden mehrere Auflöser nacheinander, und es genügt, wenn EINER
+    etwas findet. Der Router im Heimnetz kannte `kinkaramenbar.com` nicht,
+    Googles Auflöser schon - ein einzelner schweigsamer Auflöser darf keinen
+    Lead kosten. Antwortet keiner, wird im Zweifel durchgelassen.
     """
     domain = domain.lower().strip(".")
     if domain in _MAILSERVER_CACHE:
         return _MAILSERVER_CACHE[domain]
-    ergebnis = True
-    try:
-        ergebnis = _dns_frage(domain, 15) > 0 or _dns_frage(domain, 1) > 0
-    except Exception:
-        ergebnis = True                 # im Zweifel durchlassen
+
+    geantwortet = False
+    gefunden = False
+    for server in (_namensserver(), "1.1.1.1", "8.8.8.8"):
+        try:
+            treffer = _dns_frage(domain, 15, server) or _dns_frage(domain, 1, server)
+        except Exception:
+            continue                    # dieser Auflöser schweigt - nächster
+        geantwortet = True
+        if treffer:
+            gefunden = True
+            break
+    ergebnis = gefunden or not geantwortet
     _MAILSERVER_CACHE[domain] = ergebnis
     return ergebnis
 
 
 # Bewusst KEINE Liste erlaubter Endungen: ein erster Versuch damit warf
 # "office@danzon.club" weg - fuer einen Wiener Club ist .club voellig richtig.
-# Neue Endungen (.bar, .cafe, .studio, .wien) sind hier eher Regel als Ausnahme.
-# Was Muell ausfiltert, sind die beiden Pruefungen darunter: Buchstabensalat
-# und die Frage, ob die Domain ueberhaupt Post annimmt.
-
-# Zeichenketten ohne einen einzigen Vokal sind keine Woerter. "t7aacbfjx" faellt
-# darunter, "spulwerk" nicht.
-_VOKALE = set("aeiouäöüy")
-
-
-def _wirkt_zufaellig(teil):
-    """Erkennt Buchstabensalat wie 'wybx1qeqcjqcm' - ohne echte Namen zu treffen."""
-    nur_buchstaben = "".join(c for c in teil.lower() if c.isalpha())
-    if len(nur_buchstaben) < 6:
-        return False                      # zu kurz, um sicher zu urteilen
-    anteil = sum(1 for c in nur_buchstaben if c in _VOKALE) / len(nur_buchstaben)
-    return anteil < 0.2                   # unter 20 % Vokale: kein Wort
+#
+# Und bewusst KEINE Vokal-Heuristik gegen "Buchstabensalat": sie fing genau
+# einen der beiden Muell-Strings, warf dafuer aber "gbstern.at" und
+# "schwarz-hirsch.at" weg - deutsche Namen sind konsonantenreich. Was den Muell
+# zuverlaessig erwischt, ist die Frage, ob die Domain ueberhaupt Post annimmt.
 
 
 def _brauchbare_email(wert):
@@ -153,8 +152,6 @@ def _brauchbare_email(wert):
         return False
     lokal, _, domain = adresse.lower().rpartition("@")
     if any(domain == f or domain.endswith("." + f) for f in FREMDE_DOMAINS):
-        return False
-    if _wirkt_zufaellig(domain.rsplit(".", 1)[0]) or _wirkt_zufaellig(lokal):
         return False
     return hat_mailserver(domain)
 
