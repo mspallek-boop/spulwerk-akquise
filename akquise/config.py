@@ -1,6 +1,7 @@
 """Konfiguration, Stammdaten und Zielgruppen-Definitionen."""
 
 import json
+import re
 import os
 from pathlib import Path
 
@@ -141,11 +142,16 @@ KATEGORIEN = {
         ],
     },
     "buero": {
-        "label": "Agenturen, Kanzleien & Dienstleister",
+        "label": "Agenturen & Dienstleister",
         "gewicht": 14,
+        # office=lawyer ist am 27.07.2026 rausgeflogen: ein Wiener Anwalt hat
+        # auf eine Erstansprache mit dem Hinweis auf § 174 Abs 3 TKG 2021
+        # geantwortet. Rechtsberufe wissen am genauesten, was unerlaubte
+        # Direktwerbung ist - die gehoeren nicht in die Liste. RECHTSBERUFE
+        # weiter unten faengt, was ueber office=company oder =consulting
+        # trotzdem noch hereinkaeme (Kanzleien taggen sich uneinheitlich).
         "tags": [
             ("office", "company"),
-            ("office", "lawyer"),
             ("office", "financial"),
             ("office", "consulting"),
         ],
@@ -163,6 +169,46 @@ KATEGORIEN = {
         ],
     },
 }
+
+# Rechts-, Steuer- und Kammerberufe: gar nicht erst in die Datenbank aufnehmen.
+#
+# Anlass war der 27.07.2026: eine Erstansprache an eine Wiener Kanzlei kam mit
+# dem Hinweis auf § 174 Abs 3 TKG 2021 zurueck (unverlangte Direktwerbung per
+# E-Mail ist auch im B2B einwilligungspflichtig). Diese Berufsgruppen kennen
+# die Rechtslage berufsbedingt genau und haben die Mittel, darauf zu reagieren.
+#
+# Geprueft wird gegen Name, E-Mail und Website - Kanzleien taggen sich in OSM
+# uneinheitlich, ueber office=company rutschen sie sonst doch herein.
+# Auf WORTGRENZEN geprueft, nicht als Teilstring. Ein erster Versuch mit
+# schlichtem "steht drin" war unbrauchbar: "ra@" traf aurora@, nora@ und
+# ancora@, "kanzlei" traf die "K. u. K. Bierkanzlei" (ein Wirtshaus) und
+# "kammer" haette die Josefstaedter Kammerspiele erwischt. 17 Treffer,
+# davon 17 Fehlalarme.
+RECHTSBERUFE = re.compile(r"""\b(
+      rechtsanw\w*            # Rechtsanwalt, Rechtsanwaelte, Rechtsanwaltskanzlei
+    | anwalt | anw[äa]lt\w* | anwaelt\w* | anwaltskanzlei
+    | advokat\w*
+    | notar | notarin | notare | notariat\w*     # nicht Notarzt: Wortgrenze
+    | steuerberat\w* | steuerkanzlei
+    | wirtschaftspr[üu]f\w* | wirtschaftstreuh\w*
+    | patentanw\w*
+    | kanzlei                 # allein stehend; "Bierkanzlei" hat keine Grenze
+    | rechtsanwaltskammer | notariatskammer | wirtschaftskammer
+    | arbeiterkammer | [äa]rztekammer | apothekerkammer
+    | ziviltechnikerkammer
+    # Auch die OSM-Herkunft pruefen: "DDr. Ciresa" traegt kein Stichwort im
+    # Namen und kam allein ueber office=lawyer herein.
+    | lawyer | notary | tax_advisor
+)\b""", re.IGNORECASE | re.VERBOSE)
+
+
+def ist_rechtsberuf(lead):
+    """Anwalt, Notar, Steuerberater oder Kammer? Prueft Name, Adresse und die
+    OSM-Herkunft eines Leads."""
+    heu = " ".join(str(lead.get(f) or "")
+                   for f in ("name", "email", "website", "branche"))
+    return bool(RECHTSBERUFE.search(heu))
+
 
 # Begriffe, die auf einen Wettbewerber hindeuten -> nicht anschreiben.
 WETTBEWERBER_BEGRIFFE = [

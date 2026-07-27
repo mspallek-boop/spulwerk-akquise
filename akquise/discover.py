@@ -182,6 +182,14 @@ def finde(kategorien, stadt="wien", eigene_bbox=None, limit=None,
                 if _ist_wettbewerber(lead["name"]):
                     kennzahlen["uebersprungen"] += 1
                     continue
+                # Rechts-, Steuer- und Kammerberufe kommen gar nicht erst in die
+                # Datenbank (Anlass: der § 174-Hinweis einer Wiener Kanzlei am
+                # 27.07.2026). Geprueft wird auch die OSM-Herkunft: Kanzleien
+                # tragen oft nur den Personennamen, "DDr. Ciresa" waere ueber
+                # den Namen allein nie aufgefallen.
+                if config.ist_rechtsberuf(lead):
+                    kennzahlen["uebersprungen"] += 1
+                    continue
                 if nur_mit_website and not lead["website"]:
                     kennzahlen["uebersprungen"] += 1
                     continue

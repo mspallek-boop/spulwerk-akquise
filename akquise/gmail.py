@@ -185,6 +185,14 @@ def warteschlange(conn, min_score=55, prio=None, limit=None, erneut=False,
             continue
         if prio == "B" and not (55 <= wert < 70):
             continue
+        # Zweites Netz hinter dem Filter in discover.py: die Datenbank enthaelt
+        # 10.000 Leads aus der Zeit davor. Ein Rechtsberuf darf auch dann keinen
+        # Entwurf bekommen, wenn er da schon drinsteht.
+        if config.ist_rechtsberuf(zeile):
+            unbrauchbar.append({"lead_id": zeile["id"], "name": zeile["name"],
+                                "an": zeile.get("email"),
+                                "grund": "Rechts-/Steuerberuf oder Kammer"})
+            continue
         if not _brauchbare_email(zeile.get("email")):
             unbrauchbar.append({"lead_id": zeile["id"], "name": zeile["name"],
                                 "an": zeile.get("email")})
