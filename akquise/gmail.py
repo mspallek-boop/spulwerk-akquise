@@ -49,7 +49,9 @@ MAENGEL = (
     (re.compile(r"<[A-Za-zÄÖÜäöüß ]{2,25}>"), "Platzhalter in spitzen Klammern"),
     (re.compile(r"(Frau|Herr)\s*/\s*(sehr\s+geehrter?\s+)?(Frau|Herr)", re.IGNORECASE),
      "unklare Anrede 'Frau/Herr'"),
-    (re.compile(r"ewegtbild", re.IGNORECASE), "verbotenes Wort 'Bewegtbild'"),
+    # Auch getrennt geschrieben ("mit bewegtem Bild") - derselbe Jargon.
+    (re.compile(r"bewegt(?:e[srmn]?|en)?[\s\u00ad-]*bild", re.IGNORECASE),
+     "verbotenes Wort 'Bewegtbild'"),
     (re.compile(r"spulwerk\.(?!com)[a-z]{2,4}", re.IGNORECASE), "falsche Domain"),
     (re.compile(r"^\s*$"), "leerer Text"),
 )

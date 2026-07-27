@@ -242,14 +242,7 @@ Positionierung: {positionierung}
 Leistungen:
 {leistungen}
 
-Fachlicher Hintergrund (echtes Verkaufsargument, keine Erfindung):
-{hintergrund}
-Baue diesen Hintergrund in den Text ein - kurz, in einem Nebensatz, nie als
-eigener Absatz und nie angeberisch. Bei Architektur, Immobilien, Innenausbau,
-Handwerk und Hotellerie gehört er in jede Ansprache; sonst nur, wenn er zum
-Betrieb passt. Formuliere ihn jedes Mal anders ("wir kommen selbst aus der
-Architektur", "als Architekturstudenten im Master schauen wir auf Raum und
-Licht", …) - nicht denselben Satz wiederholen.
+{hintergrund_block}
 
 Regeln für jeden Text:
 - Deutsch, österreichisches Geschäftsdeutsch. Die Anrede richtet sich nach dem
@@ -299,8 +292,33 @@ Bei Kanal "dm" und "telefon" ist "betreff" null.
 """
 
 
-def _system(cfg):
+# Der Architektur-Hintergrund gehoert NUR zu diesen beiden Branchen. Ueberall
+# sonst ist er belanglos bis irritierend: Spulwerk verkauft Video, nicht
+# Architektur. Vorher stand er im System-Prompt fuer jede Ansprache und tauchte
+# entsprechend auch bei Friseuren und Gastro auf.
+HINTERGRUND_BRANCHEN = ("architektur", "immobilien")
+
+HINTERGRUND_BLOCK = """Fachlicher Hintergrund (echtes Verkaufsargument, keine Erfindung):
+{hintergrund}
+Dieser Betrieb ist aus einer Branche, in der das zaehlt. Du DARFST es erwaehnen -
+aber nur als Zugabe am Rand, in einem knappen Nebensatz, nie als eigener Absatz
+und nie angeberisch. Der Kern der Ansprache bleibt die Videoarbeit; der
+Hintergrund ist die Kirsche, nicht der Kuchen. Formuliere ihn jedes Mal anders
+("wir kommen selbst aus der Architektur", "wir planen selbst Raeume", …) und
+lass ihn weg, wenn er den Text gestelzt macht."""
+
+# Ohne die Branchen oben faellt der Hintergrund ersatzlos weg - und zwar mit
+# einer ausdruecklichen Warnung, sonst holt sich das Modell den Architektur-
+# Bezug aus der Positionierung zurueck.
+KEIN_HINTERGRUND = """Erwaehne KEIN Architekturstudium und keinen Architektur-Hintergrund.
+Fuer diesen Betrieb ist das belanglos. Ihr seid Videografen - darum geht es."""
+
+
+def _system(cfg, kategorie=None):
     firma = cfg["firma"]
+    passt = (kategorie or "").lower() in HINTERGRUND_BRANCHEN
+    block = (HINTERGRUND_BLOCK.format(hintergrund=firma.get("hintergrund", ""))
+             if passt else KEIN_HINTERGRUND)
     return SYSTEM_PROMPT.format(
         studio=firma["name"],
         stadt=firma["ort"],
@@ -310,7 +328,7 @@ def _system(cfg):
         website=firma["website"],
         kontakt_email=firma.get("email", ""),
         absender=firma["absender"],
-        hintergrund=firma.get("hintergrund", ""),
+        hintergrund_block=block,
         absender_hinweis="%s betreibt mit %s das Videostudio %s in %s"
         % (firma["absender"], firma["partner"], firma["name"], firma["ort"]),
     )
@@ -351,7 +369,7 @@ Daten über den Betrieb (nur diese Fakten verwenden):
         profil=_kurzprofil(lead, recherche),
     )
     antwort = llm.frage_json(
-        key, cfg["llm"]["modell"], _system(cfg), prompt,
+        key, cfg["llm"]["modell"], _system(cfg, lead["kategorie"]), prompt,
         max_tokens=cfg["llm"].get("max_tokens", 1600),
         anbieter=config.anbieter(cfg),
     )
@@ -364,6 +382,11 @@ Daten über den Betrieb (nur diese Fakten verwenden):
 
 
 # Sicherheitsnetz: falls die KI trotz Verbot doch Jargon nutzt oder eine
+# Auch die getrennte Schreibweise: "mit bewegtem Bild" ist derselbe Jargon wie
+# "Bewegtbild" und rutschte am alten Muster vorbei, weil das nur ein einziges
+# Wort kannte (gesehen am 27.07.2026 in einem fertigen Entwurf).
+BEWEGTBILD = re.compile(r"[Bb]ewegt(?:e[srmn]?|en)?[\s­-]*[Bb]ild(?:ern|er|es|e|s)?")
+
 # Adresse erfindet, hart ersetzen. Beides ist vorgekommen - "Bewegtbild" als
 # Jargon und "spulwerk.at" als frei erfundene Domain in der Signatur.
 # Dateiendungen ausnehmen: "./spulwerk.py" ist ein Befehl, keine Domain.
@@ -377,7 +400,7 @@ FALSCHE_DOMAIN = re.compile(
 def _saeubere(text, website=None):
     if not text:
         return text
-    text = re.sub(r"[Bb]ewegtbild(ern|er|es|e|s)?", "Videos", text)
+    text = BEWEGTBILD.sub("Videos", text)
     if website:
         text = FALSCHE_DOMAIN.sub(website.rstrip("/"), text)
     return text
