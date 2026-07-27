@@ -11,7 +11,10 @@ das Abschicken bleibt eine bewusste Handlung eines Menschen (RECHTLICHES.md).
 """
 
 import json
+import random
 import re
+import socket
+import struct
 
 from . import config, db, llm, score
 
@@ -52,11 +55,108 @@ MAENGEL = (
 )
 
 
+DNS_ZEITLIMIT = 3.0
+
+
+def _namensserver():
+    """Erster Eintrag aus /etc/resolv.conf, sonst ein oeffentlicher Auflöser."""
+    try:
+        with open("/etc/resolv.conf", encoding="utf-8") as datei:
+            for zeile in datei:
+                if zeile.startswith("nameserver"):
+                    teile = zeile.split()
+                    if len(teile) > 1 and ":" not in teile[1]:   # kein IPv6
+                        return teile[1]
+    except OSError:
+        pass
+    return "1.1.1.1"
+
+
+def _dns_frage(domain, typ):
+    """Minimale DNS-Anfrage über UDP. Rückgabe: Anzahl der Antworteinträge.
+
+    Kein externes Paket - das Werkzeug kommt bewusst mit der Standardbibliothek
+    aus, und `socket` reicht dafür.
+    """
+    kennung = random.randint(0, 0xFFFF)
+    kopf = struct.pack(">HHHHHH", kennung, 0x0100, 1, 0, 0, 0)
+    frage = b"".join(bytes([len(t)]) + t.encode("idna")
+                     for t in domain.split(".") if t) + b"\x00"
+    paket = kopf + frage + struct.pack(">HH", typ, 1)
+
+    verbindung = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    verbindung.settimeout(DNS_ZEITLIMIT)
+    try:
+        verbindung.sendto(paket, (_namensserver(), 53))
+        antwort, _ = verbindung.recvfrom(2048)
+    finally:
+        verbindung.close()
+    if len(antwort) < 12 or antwort[:2] != paket[:2]:
+        raise OSError("unpassende DNS-Antwort")
+    rcode = antwort[3] & 0x0F
+    if rcode == 3:                      # NXDOMAIN: Domain gibt es nicht
+        return 0
+    if rcode != 0:
+        raise OSError("DNS-Fehler %d" % rcode)
+    return struct.unpack(">H", antwort[6:8])[0]     # ANCOUNT
+
+
+_MAILSERVER_CACHE = {}
+
+
+def hat_mailserver(domain):
+    """Nimmt die Domain überhaupt Post an? (MX, ersatzweise A - so wie ein
+    Mailserver es auch versucht.)
+
+    Bei Netzproblemen wird im Zweifel `True` geliefert: eine wacklige Leitung
+    darf keine gültigen Adressen aussortieren.
+    """
+    domain = domain.lower().strip(".")
+    if domain in _MAILSERVER_CACHE:
+        return _MAILSERVER_CACHE[domain]
+    ergebnis = True
+    try:
+        ergebnis = _dns_frage(domain, 15) > 0 or _dns_frage(domain, 1) > 0
+    except Exception:
+        ergebnis = True                 # im Zweifel durchlassen
+    _MAILSERVER_CACHE[domain] = ergebnis
+    return ergebnis
+
+
+# Bewusst KEINE Liste erlaubter Endungen: ein erster Versuch damit warf
+# "office@danzon.club" weg - fuer einen Wiener Club ist .club voellig richtig.
+# Neue Endungen (.bar, .cafe, .studio, .wien) sind hier eher Regel als Ausnahme.
+# Was Muell ausfiltert, sind die beiden Pruefungen darunter: Buchstabensalat
+# und die Frage, ob die Domain ueberhaupt Post annimmt.
+
+# Zeichenketten ohne einen einzigen Vokal sind keine Woerter. "t7aacbfjx" faellt
+# darunter, "spulwerk" nicht.
+_VOKALE = set("aeiouäöüy")
+
+
+def _wirkt_zufaellig(teil):
+    """Erkennt Buchstabensalat wie 'wybx1qeqcjqcm' - ohne echte Namen zu treffen."""
+    nur_buchstaben = "".join(c for c in teil.lower() if c.isalpha())
+    if len(nur_buchstaben) < 6:
+        return False                      # zu kurz, um sicher zu urteilen
+    anteil = sum(1 for c in nur_buchstaben if c in _VOKALE) / len(nur_buchstaben)
+    return anteil < 0.2                   # unter 20 % Vokale: kein Wort
+
+
 def _brauchbare_email(wert):
-    if not wert or not EMAIL_MUSTER.match(str(wert).strip()):
+    if not wert:
         return False
-    domain = str(wert).strip().rsplit("@", 1)[-1].lower()
-    return not any(domain == f or domain.endswith("." + f) for f in FREMDE_DOMAINS)
+    # Unsichtbare Zeichen entfernen: eine Adresse kam mit einem vorangestellten
+    # Zero-Width-Space aus dem Seitenquelltext und passte danach zu nichts mehr.
+    adresse = "".join(c for c in str(wert) if c.isprintable() and not c.isspace())
+    if not EMAIL_MUSTER.match(adresse):
+        return False
+    lokal, _, domain = adresse.lower().rpartition("@")
+    if any(domain == f or domain.endswith("." + f) for f in FREMDE_DOMAINS):
+        return False
+    if _wirkt_zufaellig(domain.rsplit(".", 1)[0]) or _wirkt_zufaellig(lokal):
+        return False
+    return hat_mailserver(domain)
 
 
 def maengel(betreff, text):
