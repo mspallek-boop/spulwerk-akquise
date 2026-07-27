@@ -41,9 +41,9 @@ jobs:
       GMAIL_APP_PASSWORT: ${{ secrets.GMAIL_APP_PASSWORT }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -73,8 +73,14 @@ jobs:
 
       # Am 27.07.2026 lief ein Sweep acht Minuten lang scheinbar sauber durch
       # und schrieb fuer 80 Leads NUR den Telefonleitfaden aus der Vorlage -
-      # jeder Groq-Aufruf war gescheitert, gemeldet hat es niemand. Ein echter
-      # Testaufruf vorweg macht daraus einen roten Lauf statt stiller Leere.
+      # jeder Groq-Aufruf war gescheitert, gemeldet hat es niemand.
+      #
+      # Abbrechen darf dieser Check aber NUR bei einem verweigerten Schluessel.
+      # Alles andere (Aussetzer, leere Antwort, Tagesbudget) waere ein schlechter
+      # Grund, den ganzen Lauf zu verwerfen: Suchen und Anreichern brauchen gar
+      # kein Modell, und wenn die KI wirklich tot ist, bricht der Sweep von
+      # selbst ab (outreach.KI_AUSFALL_NACH). Erste Fassung dieses Checks hat
+      # genau diesen Fehler gemacht und einen kerngesunden Lauf gestoppt.
       - name: Groq prüfen
         run: |
           python3 - <<'PY'
@@ -82,18 +88,29 @@ jobs:
           from akquise import config, llm
           cfg = config.lade_config()
           try:
+              # max_tokens grosszuegig: gpt-oss ist ein Reasoning-Modell und
+              # denkt erst intern nach. Mit 16 Tokens ging das Budget dafuer
+              # drauf und der eigentliche Text blieb leer - der Check meldete
+              # "Groq antwortet nicht", obwohl der Schluessel tadellos war.
               antwort = llm.frage(config.api_key(cfg), cfg["llm"]["modell"],
                                   "Antworte mit genau einem Wort.", "Sag: bereit",
-                                  max_tokens=16, anbieter=config.anbieter(cfg))
+                                  max_tokens=200, anbieter=config.anbieter(cfg))
               print("Groq antwortet (%s): %s" % (cfg["llm"]["modell"], antwort[:60]))
           except llm.TagesbudgetErschoepft as fehler:
               print("Tagesbudget bereits aufgebraucht: %s" % fehler)
               print("Der Lauf macht trotzdem weiter — Anreichern kostet keine Tokens.")
           except Exception as fehler:
-              print("::error::Groq antwortet nicht: %s" % fehler)
-              print("Meist ist GROQ_API_KEY veraltet — neuen Key aus console.groq.com")
-              print("in die Repository-Secrets eintragen (Settings -> Secrets -> Actions).")
-              sys.exit(1)
+              text = str(fehler)
+              abgelehnt = any(m in text.lower() for m in
+                              ("401", "403", "invalid_api_key", "invalid api key"))
+              if abgelehnt:
+                  print("::error::Groq weist den Schlüssel zurück: %s" % text)
+                  print("GROQ_API_KEY erneuern: console.groq.com -> Repository")
+                  print("Settings -> Secrets and variables -> Actions.")
+                  sys.exit(1)
+              print("::warning::Groq-Testaufruf fehlgeschlagen (%s)" % text)
+              print("Kein Abbruch — der Lauf reichert weiter an; wenn die KI wirklich")
+              print("ausfällt, beendet sich der Sweep beim Texten von selbst.")
           PY
 
       # --max-minuten 50 laesst dem Lauf Luft bis kurz vor den naechsten Start.
