@@ -669,6 +669,25 @@ def _sweep_lauf(args, lauf_id=None):
         print("\n[Nachschlag] Gmail-Entwürfe ...")
         _gmail_schritt(cfg, min_score)
 
+    # Postfach-Abgleich zum Schluss - IMMER, auch wenn die Zeitgrenze den
+    # Nachschlag gestrichen hat. Er liest nur Kopfzeilen, dauert Sekunden und
+    # braucht weder Modell noch Budget. Ohne ihn zeigt das Portal Zahlen vom
+    # Laufbeginn: am 27.07.2026 galten 66 Leads als "Entwurf offen", die
+    # laengst im Gesendet-Ordner lagen - der Abgleich davor war 50 Minuten alt.
+    print("\n[Abschluss] Postfach abgleichen ...")
+    try:
+        from akquise import gmail
+        conn = db.verbinde()
+        try:
+            k = gmail.abgleich(conn, cfg)
+            print("  %d im Postfach, %d versendet (%d neu erkannt)."
+                  % (k["im_postfach"], k["gesendet_gesamt"],
+                     k["neu_als_entwurf"] + k["neu_als_gesendet"]))
+        finally:
+            conn.close()
+    except Exception as fehler:
+        print("  Übersprungen: %s" % fehler)
+
     print("\n" + "=" * 60)
     print("SWEEP fertig. %d neue Leads in diesem Lauf (Gesamt: %d)."
           % (nachher - vorher, nachher))
