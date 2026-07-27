@@ -1,14 +1,32 @@
 name: Nachschub
 
-# 20:00 Wien. GitHub rechnet in UTC, Wien ist im Sommer UTC+2, im Winter UTC+1 -
-# deshalb zwei Einträge; der Lauf ist idempotent, ein zusätzlicher Start schadet
-# nicht (die Lauf-Sperre und die Dubletten-Prüfung fangen das ab).
+# Dauerlauf: jede Stunde ein Durchgang von knapp 50 Minuten - damit arbeitet das
+# Werkzeug faktisch rund um die Uhr, ohne dass ein Rechner laufen muss.
+#
+# Warum stuendlich und nicht ein einziger Dauerauftrag: ein Auftrag darf bei
+# GitHub hoechstens 6 Stunden laufen, und ein abgestuerzter Lauf wuerde bis zum
+# naechsten Start eine grosse Luecke reissen. Stuendlich kostet ein Absturz
+# hoechstens eine Stunde.
+#
+# Der Takt ist nicht der Flaschenhals - das Tages-Tokenbudget von Groq ist es
+# (rund 42 betextete Leads pro Tag). Was die Stunden dazwischen fuellt, ist das
+# Anreichern: es kostet keine Tokens und ist genau das, was den Textdeckel
+# ueberhaupt fuellen kann.
+#
+# Der zweite Deckel ist Supabase: der Gratis-Tarif gibt 5 GB Uebertragung im
+# Monat. Ein Lauf zog anfangs rund 40 MB (mehrere Vollscans ueber alle 10.389
+# Leads) - stuendlich waeren das 29 GB im Monat gewesen, und genau daran ist
+# das Kontingent am 27.07.2026 zerschellt. Nach dem Umbau auf gezielte Spalten,
+# serverseitige Filter und HEAD-Zaehlungen sind es 1,1 MB je Lauf, also rund
+# 0,8 GB im Monat. Wer hier etwas hinzufuegt, das `select=*` ueber alle Leads
+# macht, sprengt das wieder - Messskript siehe README.
 on:
   schedule:
-    - cron: "0 18 * * *"   # Sommerzeit  (MESZ)
-    - cron: "0 19 * * *"   # Winterzeit  (MEZ)
+    - cron: "0 * * * *"
   workflow_dispatch:        # Knopf im Portal / in GitHub
 
+# Zwei Laeufe gleichzeitig wuerden sich beim Groq-Minutenlimit gegenseitig
+# abschiessen. Faengt einer an, wartet der naechste - abgewuergt wird keiner.
 concurrency:
   group: spulwerk-nachschub
   cancel-in-progress: false
@@ -53,13 +71,40 @@ jobs:
               sys.exit(1)
           PY
 
+      # Am 27.07.2026 lief ein Sweep acht Minuten lang scheinbar sauber durch
+      # und schrieb fuer 80 Leads NUR den Telefonleitfaden aus der Vorlage -
+      # jeder Groq-Aufruf war gescheitert, gemeldet hat es niemand. Ein echter
+      # Testaufruf vorweg macht daraus einen roten Lauf statt stiller Leere.
+      - name: Groq prüfen
+        run: |
+          python3 - <<'PY'
+          import sys
+          from akquise import config, llm
+          cfg = config.lade_config()
+          try:
+              antwort = llm.frage(config.api_key(cfg), cfg["llm"]["modell"],
+                                  "Antworte mit genau einem Wort.", "Sag: bereit",
+                                  max_tokens=16, anbieter=config.anbieter(cfg))
+              print("Groq antwortet (%s): %s" % (cfg["llm"]["modell"], antwort[:60]))
+          except llm.TagesbudgetErschoepft as fehler:
+              print("Tagesbudget bereits aufgebraucht: %s" % fehler)
+              print("Der Lauf macht trotzdem weiter — Anreichern kostet keine Tokens.")
+          except Exception as fehler:
+              print("::error::Groq antwortet nicht: %s" % fehler)
+              print("Meist ist GROQ_API_KEY veraltet — neuen Key aus console.groq.com")
+              print("in die Repository-Secrets eintragen (Settings -> Secrets -> Actions).")
+              sys.exit(1)
+          PY
+
+      # --max-minuten 50 laesst dem Lauf Luft bis kurz vor den naechsten Start.
+      # Das Anreichern fuellt den Rest der Stunde und haelt sich selbst an die Uhr.
       - name: Sweep
         run: |
           python3 spulwerk.py sweep \
             --quelle github \
             --rotation 4 \
-            --max-minuten 40 \
-            --enrich-limit 200 \
+            --max-minuten 50 \
+            --enrich-limit 800 \
             --budget 0.85
 
       - name: Kurzbericht

@@ -226,7 +226,7 @@ def cmd_status(args):
                 ergebnis=args.notiz or args.neuer_status,
             )
         db.aktualisiere_lead(conn, lead["id"], **felder)
-    print("Lead %d -> %s" % (lead["id"], args.neuer_status))
+    print("Lead %s -> %s" % (lead["id"], args.neuer_status))
     if felder.get("wiedervorlage"):
         print("Wiedervorlage: %s" % felder["wiedervorlage"])
     conn.close()
@@ -397,62 +397,46 @@ class Fortschritt:
                                 "%s — %s" % (self.aktuell, text), prozent, self.erledigt)
 
 
-# Erfahrungswert aus den bisherigen Läufen: gut die Hälfte der analysierten
-# Websites führt zu einem Lead ab Score 55.
-QUALIFIZIERUNGSQUOTE = 0.5
-
-
 # Groqs Gratis-Tarif deckelt nicht die Anfragen, sondern die Tokens pro Tag
 # (200.000). Ein Lead kostet mit E-Mail und DM rund 4.700 - mehr als das geht
 # an keinem Tag, egal was die Anfragen-Kopfzeilen sagen.
 LEADS_PRO_TAG_MAX = 42
 
 
-def _textbudget(cfg, args):
-    """Wie viele Leads lassen sich heute Nacht überhaupt betexten?"""
-    if args.ohne_texten:
-        return 0
-    budget = args.text_limit or LEADS_PRO_TAG_MAX
-    if getattr(args, "budget", None) and config.anbieter(cfg) == "groq":
-        from akquise import llm
-        limit, rest = llm.groq_ratelimit(config.api_key(cfg), cfg["llm"]["modell"])
-        if limit and rest is not None:
-            offen = max(0, int(limit * args.budget) - (limit - rest))
-            budget = min(budget, max(0, offen // 2))
-    return min(budget, LEADS_PRO_TAG_MAX)
+
+
+# Unter so vielen unangereicherten Websites lohnt die Suche nach neuen
+# Betrieben. Darüber ist genug Arbeit da - dann ist Suchen nur Zeitverschwendung.
+SUCHE_AB_VORRAT = 300
 
 
 def _bedarf(cfg, args, min_score):
-    """Der Lauf soll nicht mehr suchen und analysieren, als er danach auch
-    betexten kann - sonst wächst nur ein Berg unbearbeiteter Leads.
+    """Wie viel Such- und Analysearbeit steht in diesem Lauf an?
+
+    Früher hing das am Textbudget: es wurde nur so viel analysiert, wie danach
+    auch betextet werden konnte. Das war falsch herum. Suchen und Anreichern
+    kosten KEINE Modell-Tokens, nur Zeit und Netz - sie sind genau das, was
+    den täglichen Textdeckel überhaupt füllt. Gebremst hat diese Kopplung das
+    Werkzeug ab dem 27.07.2026 sogar dauerhaft: der Rückstand zählte Leads mit,
+    die gar nicht mehr textbar waren, und legte damit Suche UND Anreicherung
+    für immer still.
 
     Rückgabe: (wie viele Websites analysieren, soll gesucht werden, Begründung)
     """
-    budget = _textbudget(cfg, args)
     conn = db.verbinde()
     try:
-        # Nur die wirklich Qualifizierten zählen (Prio A/B) - die C-Leads
-        # sind Beifang und sollen die Suche nicht dauerhaft blockieren.
-        rueckstand = len([l for l in db.leads(conn, min_score=min_score)
-                          if not db.entwuerfe(conn, l["id"], "email")])
-        vorrat = len([l for l in db.leads(conn)
-                      if l["website"] and not l["angereichert_am"]])
+        # Zählen, nicht holen: die Frage ist "wie viele?", und ein Vollscan
+        # über alle Leads kostete dafür 8,8 MB Supabase-Volumen - je Lauf.
+        vorrat = db.zaehle_leads(conn, nur_unangereichert=True, nur_mit_website=True)
     finally:
         conn.close()
 
-    if budget <= 0:
-        return 0, False, "Tagesbudget des Modells ist aufgebraucht"
-    if rueckstand >= budget:
-        return 0, False, ("%d qualifizierte Leads warten schon auf Text, "
-                          "das füllt das heutige Budget von %d" % (rueckstand, budget))
-
-    fehlend = budget - rueckstand
-    noetig = int(fehlend / QUALIFIZIERUNGSQUOTE) + 1
-    grenze = min(noetig, args.enrich_limit or noetig)
-    suchen = vorrat < noetig
-    grund = ("%d Leads im Rückstand, Budget %d -> %d neue Qualifizierte nötig, "
-             "dafür ~%d Websites analysieren (Vorrat: %d)"
-             % (rueckstand, budget, fehlend, grenze, vorrat))
+    grenze = min(args.enrich_limit or vorrat, vorrat)
+    suchen = vorrat < SUCHE_AB_VORRAT
+    grund = ("%d Websites noch nicht analysiert -> bis zu %d in diesem Lauf; "
+             "Suche %s (Schwelle %d)"
+             % (vorrat, grenze,
+                "an" if suchen else "aus, Vorrat reicht", SUCHE_AB_VORRAT))
     return grenze, suchen, grund
 
 
@@ -474,6 +458,11 @@ def _texten_schritt(cfg, args, min_score, melder=None):
             print("  Groq-Budget: %d/%d Anfragen genutzt heute, Ziel %d%% (%d) "
                   "→ bis zu %d Leads texten"
                   % (genutzt, limit, int(args.budget * 100), ziel, text_limit))
+    # Die Anfragen-Kopfzeilen sind grosszuegig (1000/Tag), der echte Deckel sind
+    # die TOKENS pro Tag - rund 42 Leads. Ohne diese Grenze liefe der Lauf in
+    # jeder Stunde gegen die 429-Wand, statt von vornherein Mass zu halten.
+    if text_limit is None or text_limit > LEADS_PRO_TAG_MAX:
+        text_limit = LEADS_PRO_TAG_MAX
     if text_limit <= 0:
         print("  Übersprungen — Tagesbudget des Modells erschöpft (morgen weiter).")
         return
@@ -568,6 +557,10 @@ def _sweep_lauf(args, lauf_id=None):
     def zeit_um():
         return schluss is not None and time.monotonic() > schluss
 
+    # Merkt sich, ab wann dieser Lauf etwas angefasst haben kann - danach
+    # bewertet Schritt 5 nur noch das, was sich seither geruehrt hat.
+    laufbeginn = db.jetzt()
+
     print("=" * 60)
     print("SWEEP  %s  |  Stadt: %s  |  %d Branchen" % (db.jetzt(), stadt, len(kategorien)))
     print("=" * 60)
@@ -616,7 +609,7 @@ def _sweep_lauf(args, lauf_id=None):
     elif enrich_grenze <= 0:
         print("  Übersprungen - %s." % grund)
     else:
-        print("  Höchstens %d Websites (mehr bringt heute nichts)." % enrich_grenze)
+        print("  Höchstens %d Websites, Rest übernimmt der nächste Lauf." % enrich_grenze)
         # Jede geprüfte Website meldet sich - so bewegt sich die Live-Ansicht
         # auch in dem Schritt, der am längsten dauert.
         gezaehlt = {"n": 0}
@@ -628,28 +621,42 @@ def _sweep_lauf(args, lauf_id=None):
                 melder.zwischenstand("%d von %d Websites" % (gezaehlt["n"], enrich_grenze),
                                      gezaehlt["n"] / max(enrich_grenze, 1))
 
+        # Das Anreichern ist der lange Schritt und darf jetzt den ganzen Rest
+        # des Zeitfensters füllen - deshalb prüft es die Uhr bei jeder Website
+        # selbst, statt nur einmal vorher.
         enrich.reichere_an(limit=enrich_grenze, pause=cfg["akquise"]["pause_sekunden"],
-                           ausgabe=ausgabe)
+                           ausgabe=ausgabe, weiter=lambda: not zeit_um())
 
     print("\n[5/6] Bewerten ...")
     melder.schritt("Bewerten")
-    score.bewerte_alle(min_score_qualifiziert=min_score)
+    k = score.bewerte_alle(min_score_qualifiziert=min_score, seit=laufbeginn)
+    print("  %d Leads geprüft, %d geändert (nur was dieser Lauf berührt hat)."
+          % (k["bewertet"], k["geaendert"]))
 
     conn = db.verbinde()
-    zeilen = db.leads(conn, min_score=min_score)
-    report.exportiere_instagram(conn, zeilen)
-    report.exportiere_csv(zeilen)
+    # Die Exporte landen in export/ - auf einem Cloud-Läufer ist das Verzeichnis
+    # nach dem Lauf weg. Sie zu schreiben kostet dort nur Übertragungsvolumen.
+    if db.BACKEND != "supabase":
+        zeilen = db.leads(conn, min_score=min_score)
+        report.exportiere_instagram(conn, zeilen)
+        report.exportiere_csv(zeilen)
     nachher = db.anzahl_leads(conn)
     conn.close()
 
     print("\n[6/6] Sync nach Supabase (Portal) ...")
     melder.schritt("Portal-Sync")
-    try:
-        from akquise import sync
-        s = sync.synchronisiere()
-        print("  %d Leads ins Portal übertragen." % s["gesendet"])
-    except Exception as fehler:
-        print("  Sync übersprungen: %s" % fehler)
+    if db.BACKEND == "supabase":
+        # In der Cloud IST die Portal-Datenbank die Arbeitsdatenbank - alles
+        # steht schon drin. Ein Sync wäre ein Upsert von sich selbst auf sich
+        # selbst: kostet Minuten und kann an NOT-NULL-Spalten scheitern.
+        print("  Entfällt - der Lauf schreibt direkt ins Portal.")
+    else:
+        try:
+            from akquise import sync
+            s = sync.synchronisiere()
+            print("  %d Leads ins Portal übertragen." % s["gesendet"])
+        except Exception as fehler:
+            print("  Sync übersprungen: %s" % fehler)
 
     # Zweite Runde: die heute neu gefundenen Leads texten und ablegen, falls
     # vom Tagesbudget noch etwas übrig ist.

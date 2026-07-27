@@ -17,6 +17,20 @@ KANAELE = ("email", "dm", "telefon")
 # (gpt-oss mit reasoning=low ist schnell -> ohne Pause 429 -> Vorlagen-Fallback).
 GROQ_PAUSE_SEK = 4.5
 
+# So viele Leads in Folge ohne einen einzigen KI-Text, dann bricht der Lauf ab.
+# Drei reichen: einzelne Aussetzer kommen vor, drei hintereinander sind der
+# Anbieter selbst.
+KI_AUSFALL_NACH = 3
+
+# Zwei Stufen, und das aus einem handfesten Grund: ab Score 40 stehen 2.757
+# Leads zur Auswahl, betextet werden davon am Tag rund 42. Die fette Spalte
+# `recherche` fuer alle 2.757 zu holen kostete 3,8 MB Supabase-Volumen je
+# Durchgang - fuer 98 % davon voellig umsonst.
+#
+# Stufe 1: nur was zum AUSWAEHLEN noetig ist (und was `ist_gesperrt` liest).
+AUSWAHL_SPALTEN = ("id", "name", "score", "website", "email", "angereichert_am")
+# Stufe 2: der volle Datensatz - je Lead einzeln, erst wenn er dran ist.
+
 
 def _anrede(cfg):
     return "Sie" if cfg["firma"].get("anrede", "Sie") == "Sie" else "du"
@@ -371,18 +385,31 @@ def _saeubere(text, website=None):
 
 # --------------------------------------------------------------- Steuerung
 
+# KI-Kanäle: alles außer Telefon. Der Telefonleitfaden kommt bewusst immer
+# aus der Vorlage - das strukturierte Skript (Einwände, Fragen, Ablauf) ist
+# stärker als frei generierter Text und spart Tokenbudget.
+def _ki_kanaele(kanaele):
+    return [k for k in kanaele if k != "telefon"]
+
+
 def erzeuge_fuer_lead(conn, lead, cfg, key, kanaele=KANAELE, ausgabe=print):
+    """Erzeugt die Entwürfe eines Leads.
+
+    Rückgabe: (ergebnisse, ki_komplett_gescheitert). Das zweite Feld meldet,
+    dass die KI erreichbar sein sollte, aber KEIN einziger Kanal durchkam -
+    daran erkennt `erzeuge`, dass der Anbieter in Wahrheit nicht antwortet.
+    """
     recherche = db.lade_json(lead["recherche"], {})
     ergebnisse = {}
+    ki_versucht = ki_geglueckt = 0
     for kanal in kanaele:
         betreff, text, quelle = None, None, "vorlage"
-        # Telefonleitfaden bewusst immer aus der Vorlage: das strukturierte
-        # Skript (Einwände, Fragen, Ablauf) ist stärker als frei generierter
-        # Text und spart Tokenbudget.
         if kanal != "telefon" and llm.verfuegbar(cfg, key):
+            ki_versucht += 1
             try:
                 betreff, text = erzeuge_mit_llm(lead, recherche, cfg, key, kanal)
                 quelle = "claude"
+                ki_geglueckt += 1
             except llm.TagesbudgetErschoepft:
                 raise  # Lauf sauber beenden, nicht auf Vorlagen ausweichen
             except llm.LLMFehler as fehler:
@@ -395,7 +422,7 @@ def erzeuge_fuer_lead(conn, lead, cfg, key, kanaele=KANAELE, ausgabe=print):
             betreff, text = VORLAGEN[kanal](lead, recherche, cfg)
         db.speichere_entwurf(conn, lead["id"], kanal, betreff, text, quelle)
         ergebnisse[kanal] = (betreff, text, quelle)
-    return ergebnisse
+    return ergebnisse, bool(ki_versucht and not ki_geglueckt)
 
 
 def erzeuge(min_score=None, limit=20, kanaele=KANAELE, nur_neue=True,
@@ -413,16 +440,28 @@ def erzeuge(min_score=None, limit=20, kanaele=KANAELE, nur_neue=True,
             raise ValueError("Lead %s nicht gefunden" % lead_id)
     else:
         qualifiziert_ab = cfg["akquise"]["min_score"]
-        roh = db.leads(
-            conn, min_score=min_score, limit=None,
-            nur_ohne_entwurf=nur_neue,
+        # "Neu" heisst: es fehlt mindestens ein KI-Kanal (E-Mail, DM). NICHT
+        # "der Lead hat ueberhaupt keinen Entwurf" - daran hat sich das Werkzeug
+        # am 27.07.2026 selbst ausgesperrt: als Groq ausfiel, blieb je Lead nur
+        # der Telefonleitfaden aus der Vorlage stehen, und weil damit "ein
+        # Entwurf da" war, kamen 99 qualifizierte Leads nie wieder an die Reihe.
+        noetig = set(_ki_kanaele(kanaele) or kanaele)
+        # Beide Bedingungen macht die Datenbank: "es fehlt ein KI-Kanal" und
+        # "qualifiziert ODER Website analysiert" (unter der Qualifiziert-Grenze
+        # fehlt sonst der konkrete Aufhaenger). Im Speicher gefiltert kamen
+        # 2.757 Zeilen an, um 197 zu behalten - 0,48 statt 0,04 MB, zweimal je Lauf.
+        kandidaten = db.leads(
+            conn, min_score=min_score, spalten=AUSWAHL_SPALTEN,
+            textbar_ab=qualifiziert_ab,
+            ohne_entwurf_kanal=sorted(noetig) if nur_neue else None,
         )
-        # Unter der Qualifiziert-Grenze (z. B. C-Leads) nur Betriebe mit schon
-        # analysierter Website texten - sonst fehlt der konkrete Aufhänger.
-        kandidaten = [
-            l for l in roh
-            if l["score"] >= qualifiziert_ab or l["angereichert_am"]
-        ]
+        if nur_neue:
+            # Feinschliff im Speicher: die Datenbank fragt "mindestens einer
+            # fehlt", hier steht genau, welcher - und der Abgleich ist billig
+            # (0,02 MB), seit nur noch `quelle` statt der Texte geholt wird.
+            vorhanden = db.kanaele_je_lead(conn, kanaele)
+            kandidaten = [l for l in kandidaten
+                          if noetig - vorhanden.get(l["id"], set())]
         if frisch_seit:
             fertig = db.entwuerfe_frisch_seit(conn, kanaele, frisch_seit)
             vorher = len(kandidaten)
@@ -433,15 +472,20 @@ def erzeuge(min_score=None, limit=20, kanaele=KANAELE, nur_neue=True,
             kandidaten = kandidaten[:limit]
 
     kennzahlen = {"leads": 0, "entwuerfe": 0, "per_claude": 0, "budget_ende": None}
+    am_stueck_gescheitert = 0
     for lead in kandidaten:
         if db.ist_gesperrt(conn, lead):
             ausgabe("  [%s] %s - auf Sperrliste, übersprungen" % (lead["id"], lead["name"]))
             continue
         ausgabe("  [%s] %s (Score %d, Prio %s)"
                 % (lead["id"], lead["name"][:40], lead["score"], score.prioritaet(lead["score"])))
+        # Jetzt erst den vollen Datensatz holen - dieser Lead ist wirklich dran.
+        # 42 kleine Einzelabfragen am Tag sind nichts gegen 2.757 fette.
+        if not lead_id:
+            lead = db.hole_lead(conn, lead["id"]) or lead
         try:
             with conn:
-                ergebnisse = erzeuge_fuer_lead(conn, lead, cfg, key, kanaele, ausgabe)
+                ergebnisse, ki_tot = erzeuge_fuer_lead(conn, lead, cfg, key, kanaele, ausgabe)
         except llm.TagesbudgetErschoepft as fehler:
             kennzahlen["budget_ende"] = str(fehler)
             ausgabe("\n  Tagesbudget des Modells aufgebraucht - Lauf wird hier beendet.")
@@ -453,6 +497,19 @@ def erzeuge(min_score=None, limit=20, kanaele=KANAELE, nur_neue=True,
         kennzahlen["per_claude"] += sum(
             1 for _, _, quelle in ergebnisse.values() if quelle == "claude"
         )
+        # Wenn bei mehreren Leads hintereinander KEIN einziger KI-Kanal
+        # durchkommt, liegt es nicht am Lead, sondern am Anbieter (falscher
+        # Schluessel, gesperrt, Netz). Genau so lief der 27.07.2026 ins Leere:
+        # 80 Leads, 80x nur der Telefonleitfaden aus der Vorlage, und niemand
+        # hat es gemerkt, weil der Lauf sich als "fertig" meldete.
+        am_stueck_gescheitert = am_stueck_gescheitert + 1 if ki_tot else 0
+        if am_stueck_gescheitert >= KI_AUSFALL_NACH:
+            raise llm.LLMFehler(
+                "Bei %d Leads in Folge kam kein einziger KI-Text durch - der "
+                "Anbieter (%s) antwortet nicht. Lauf abgebrochen, damit nicht "
+                "reihenweise Vorlagentexte entstehen. Meist ist der API-Key "
+                "abgelaufen." % (am_stueck_gescheitert, config.anbieter(cfg))
+            )
         # Tempo drosseln, damit Groqs Minuten-Limit nicht greift (nur bei LLM).
         if llm.verfuegbar(cfg, key) and config.anbieter(cfg) == "groq":
             time.sleep(GROQ_PAUSE_SEK)

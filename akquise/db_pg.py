@@ -242,10 +242,14 @@ def hole_lead(conn, lead_id):
     return zeilen[0] if zeilen else None
 
 
-def leads(conn, status=None, kategorie=None, min_score=None, ort=None,
-          limit=None, nur_unangereichert=False, nur_ohne_entwurf=False,
-          sortierung="score"):
-    teile = ["select=*", "status=neq.gesperrt"]
+def _lead_filter(status=None, kategorie=None, min_score=None, ort=None,
+                 nur_unangereichert=False, nur_ohne_entwurf=False,
+                 nur_mit_website=False, geaendert_seit=None,
+                 nur_unbewertet=False, ohne_entwurf_kanal=None,
+                 textbar_ab=None):
+    """Die Bedingungen einer Lead-Abfrage - ohne select, Sortierung und Limit.
+    Damit zählt `zaehle_leads` genau dieselbe Menge, die `leads` holen würde."""
+    teile = ["status=neq.gesperrt"]
     if status:
         teile.append("status=eq.%s" % status)
     if kategorie:
@@ -256,14 +260,68 @@ def leads(conn, status=None, kategorie=None, min_score=None, ort=None,
         teile.append("ort=ilike.*%s*" % urllib.parse.quote(ort))
     if nur_unangereichert:
         teile.append("angereichert_am=is.null")
+    if nur_mit_website:
+        # Muss in die ABFRAGE, nicht hinterher: nur gut vier von zehn Leads
+        # haben eine Website. Wer erst `limit` zieht und dann filtert, bekommt
+        # oft eine leere Liste zurück - genau daran hat das Anreichern
+        # jahrelang stillgestanden, ohne sich zu beschweren.
+        teile.append("website=not.is.null")
+        teile.append("website=neq.")
     if nur_ohne_entwurf:
         teile.append("entwuerfe=is.null")
+    if geaendert_seit:
+        teile.append("aktualisiert_am=gte.%s" % urllib.parse.quote(str(geaendert_seit)))
+    if nur_unbewertet:
+        teile.append("signale=is.null")
+    # Zwei Oder-Gruppen, die zusammen UND ergeben. PostgREST verträgt nur ein
+    # `or=` je Anfrage, deshalb beide in ein gemeinsames `and=(...)`.
+    gruppen = []
+    if ohne_entwurf_kanal:
+        # "Mindestens einer dieser Kanäle fehlt noch" - serverseitig, damit
+        # nicht Tausende Leads über die Leitung gehen, von denen die meisten
+        # längst getextet sind. Ein fehlender JSON-Pfad liefert NULL, ein
+        # fehlendes `entwuerfe` ebenfalls - beides zählt als "fehlt".
+        gruppen.append("or(%s)" % ",".join(
+            "entwuerfe->%s->>quelle.is.null" % k for k in ohne_entwurf_kanal))
+    if textbar_ab is not None:
+        # Unter der Qualifiziert-Grenze nur Betriebe mit analysierter Website -
+        # sonst fehlt der konkrete Aufhänger. Diese Bedingung gehört in die
+        # Abfrage: im Browser gefiltert kamen 2.757 Zeilen an, um 197 zu behalten.
+        gruppen.append("or(score.gte.%d,angereichert_am.not.is.null)" % textbar_ab)
+    if gruppen:
+        teile.append("and=(%s)" % ",".join(gruppen))
+    return teile
+
+
+def leads(conn, status=None, kategorie=None, min_score=None, ort=None,
+          limit=None, nur_unangereichert=False, nur_ohne_entwurf=False,
+          nur_mit_website=False, geaendert_seit=None, nur_unbewertet=False,
+          ohne_entwurf_kanal=None, textbar_ab=None,
+          sortierung="score", spalten=None):
+    """`spalten` holt nur die genannten Felder.
+
+    Das ist in der Cloud kein Feinschliff, sondern der Unterschied zwischen
+    8,8 MB und 1,3 MB je Durchgang: `recherche` und `entwuerfe` sind fette
+    JSON-Spalten, und Supabases Gratis-Tarif zählt jedes übertragene Byte
+    gegen 5 GB im Monat. Wer sie nicht braucht, darf sie nicht anfordern.
+    """
+    teile = _lead_filter(status, kategorie, min_score, ort,
+                         nur_unangereichert, nur_ohne_entwurf, nur_mit_website,
+                         geaendert_seit, nur_unbewertet, ohne_entwurf_kanal,
+                         textbar_ab)
+    teile.insert(0, "select=%s" % (",".join(spalten) if spalten else "*"))
     teile.append({
         "score": "order=score.desc,name.asc",
         "name": "order=name.asc",
         "neu": "order=erstellt_am.desc",
     }.get(sortierung, "order=score.desc,name.asc"))
     return conn.alle_seiten("%s?%s" % (LEADS, "&".join(teile)), hoechstens=limit)
+
+
+def zaehle_leads(conn, **filter):
+    """Nur die Anzahl - PostgREST liefert sie im Kopf, der Rumpf bleibt leer.
+    Kostet damit praktisch kein Übertragungsvolumen."""
+    return conn.zaehle("%s?%s" % (LEADS, "&".join(_lead_filter(**filter))))
 
 
 def faellige_wiedervorlagen(conn):
@@ -328,6 +386,31 @@ def loesche_entwurf(conn, lead_id, kanal):
     conn.anfrage("%s?id=eq.%s" % (LEADS, lead_id), "PATCH",
                  {"entwuerfe": bestand or None, "aktualisiert_am": jetzt()},
                  {"Prefer": "return=minimal"})
+
+
+KANAELE_STANDARD = ("email", "dm", "telefon")
+
+
+def kanaele_je_lead(conn, kanaele=KANAELE_STANDARD):
+    """lead_id -> Menge der Kanäle, für die schon ein Entwurf da ist.
+
+    Eine einzige Abfrage für alle Leads - eine Anfrage je Lead ist in der Cloud
+    zu teuer (siehe `_bekannte`). Damit kann `outreach.erzeuge` fragen, wem noch
+    ein KANAL fehlt, statt nur, ob überhaupt irgendein Entwurf da ist.
+
+    Gefragt wird über den JSON-Pfad nach `quelle` ('claude'/'vorlage'), nicht
+    nach der ganzen Spalte: die Antwort lautet so oder so nur ja/nein, aber
+    `entwuerfe` komplett zu holen bedeutet jeden Mailtext mitzuschleppen -
+    0,73 MB statt 0,02 MB, und das zweimal je Lauf. `quelle` steht genau dann
+    da, wenn ein Entwurf existiert (`speichere_entwurf` schreibt beides zusammen).
+    """
+    felder = ",".join("%s:entwuerfe->%s->>quelle" % (k, k) for k in kanaele)
+    zeilen = conn.alle_seiten(
+        "%s?select=id,%s&entwuerfe=not.is.null" % (LEADS, felder))
+    ergebnis = {}
+    for zeile in zeilen:
+        ergebnis[zeile["id"]] = set(k for k in kanaele if zeile.get(k))
+    return ergebnis
 
 
 def entwuerfe_frisch_seit(conn, kanaele, seit):
@@ -455,6 +538,23 @@ def gmail_zahlen(conn, min_score, erledigt_status):
                     and not (lade_json(z.get("entwuerfe"), {}) or {}).get("email"))
     return {"kandidaten": len(zeilen), "gesendet": gesendet,
             "im_entwurf": im_entwurf, "ohne_text": ohne_text}
+
+
+def gmail_abgleich_kandidaten(conn):
+    """Leads, für die der Postfach-Abgleich überhaupt etwas ändern könnte.
+
+    Ohne Adresse ist nichts abzugleichen, und wer schon beide Marker trägt, ist
+    durch. Das trennt 1.626 von 10.389 Leads - der Abgleich läuft zweimal je
+    Lauf, aus 2,5 MB werden damit 0,2 MB.
+    """
+    teile = [
+        "select=%s" % ",".join(("id", "email", "status", "kontaktversuche",
+                                "gmail_am", "gmail_gesendet_am")),
+        "status=neq.gesperrt",
+        "email=not.is.null",
+        "or=(gmail_am.is.null,gmail_gesendet_am.is.null)",
+    ]
+    return conn.alle_seiten("%s?%s" % (LEADS, "&".join(teile)))
 
 
 def anzahl_leads(conn):

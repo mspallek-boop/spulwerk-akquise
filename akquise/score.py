@@ -130,15 +130,32 @@ def prioritaet(score):
     return "D"
 
 
-def bewerte_alle(min_score_qualifiziert=55, ausgabe=print):
-    """Bewertet alle Leads neu und hebt gute auf Status 'qualifiziert'.
+# Alles, was bewerte_lead() liest - aber NICHT die fette Spalte `entwuerfe`.
+SPALTEN = ("id", "name", "kategorie", "website", "email", "telefon",
+           "instagram", "recherche", "score", "signale", "status")
+
+
+def bewerte_alle(min_score_qualifiziert=55, ausgabe=print, seit=None):
+    """Bewertet Leads neu und hebt gute auf Status 'qualifiziert'.
 
     Geschrieben wird nur, was sich wirklich geaendert hat, und das in Bloecken:
     Ueber die Netz-Schnittstelle waere eine Anfrage je Lead stundenlang
     unterwegs und braeche unterwegs ab.
+
+    `seit` bewertet nur, was sich seitdem geruehrt hat (plus alles noch nie
+    Bewertete). Die Punktzahl haengt nur an Stammdaten und `recherche` - beides
+    aendert sich ausschliesslich beim Suchen und Anreichern. Alle 10.000 Leads
+    stuendlich neu durchzurechnen zog 6 MB Supabase-Volumen je Lauf, ohne dass
+    sich an 99,9 % davon etwas geaendert haette.
     """
     conn = db.verbinde()
-    alle = db.leads(conn)
+    if seit:
+        alle = db.leads(conn, spalten=SPALTEN, geaendert_seit=seit)
+        bekannt = set(l["id"] for l in alle)
+        alle += [l for l in db.leads(conn, spalten=SPALTEN, nur_unbewertet=True)
+                 if l["id"] not in bekannt]
+    else:
+        alle = db.leads(conn, spalten=SPALTEN)
     kennzahlen = {"bewertet": 0, "A": 0, "B": 0, "C": 0, "D": 0, "qualifiziert": 0,
                   "geaendert": 0}
     aenderungen = []

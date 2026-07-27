@@ -233,7 +233,12 @@ def hole_lead(conn, lead_id):
 
 def leads(conn, status=None, kategorie=None, min_score=None, ort=None,
           limit=None, nur_unangereichert=False, nur_ohne_entwurf=False,
-          sortierung="score"):
+          nur_mit_website=False, geaendert_seit=None, nur_unbewertet=False,
+          ohne_entwurf_kanal=None, textbar_ab=None,
+          sortierung="score", spalten=None):
+    """`spalten` ist hier reine Formsache - eine lokale Datei kostet kein
+    Übertragungsvolumen. Die Signatur muss aber zu db_pg passen, sonst
+    verhielte sich derselbe Code auf dem Mac anders als in der Cloud."""
     bedingungen = ["status != 'gesperrt'"]
     werte = []
     if status:
@@ -250,21 +255,53 @@ def leads(conn, status=None, kategorie=None, min_score=None, ort=None,
         werte.append("%%%s%%" % ort.lower())
     if nur_unangereichert:
         bedingungen.append("angereichert_am IS NULL")
+    if nur_mit_website:
+        # Siehe db_pg.leads: erst filtern, dann begrenzen - sonst liefert
+        # `limit` lauter Leads ohne Website und es passiert nichts.
+        bedingungen.append("COALESCE(website, '') != ''")
     if nur_ohne_entwurf:
         bedingungen.append(
             "id NOT IN (SELECT lead_id FROM entwuerfe)"
         )
+    if geaendert_seit:
+        bedingungen.append("aktualisiert_am >= ?")
+        werte.append(str(geaendert_seit))
+    if nur_unbewertet:
+        bedingungen.append("signale IS NULL")
+    if ohne_entwurf_kanal:
+        # "Mindestens einer dieser Kanäle fehlt" = NICHT "hat sie alle".
+        # Gegenstück zum or=(...)-Filter in db_pg.
+        platz = ",".join("?" * len(ohne_entwurf_kanal))
+        bedingungen.append(
+            "id NOT IN (SELECT lead_id FROM entwuerfe WHERE kanal IN (%s) "
+            "AND COALESCE(text, '') != '' GROUP BY lead_id "
+            "HAVING COUNT(DISTINCT kanal) = ?)" % platz
+        )
+        werte.extend(list(ohne_entwurf_kanal) + [len(ohne_entwurf_kanal)])
+    if textbar_ab is not None:
+        # Gegenstück zur zweiten Oder-Gruppe in db_pg._lead_filter.
+        bedingungen.append("(score >= ? OR angereichert_am IS NOT NULL)")
+        werte.append(textbar_ab)
     sortier_sql = {
         "score": "score DESC, name ASC",
         "name": "name ASC",
         "neu": "erstellt_am DESC",
     }.get(sortierung, "score DESC, name ASC")
-    sql = "SELECT * FROM leads WHERE %s ORDER BY %s" % (
-        " AND ".join(bedingungen), sortier_sql,
+    auswahl = ", ".join(spalten) if spalten else "*"
+    sql = "SELECT %s FROM leads WHERE %s ORDER BY %s" % (
+        auswahl, " AND ".join(bedingungen), sortier_sql,
     )
     if limit:
         sql += " LIMIT %d" % int(limit)
     return conn.execute(sql, werte).fetchall()
+
+
+def zaehle_leads(conn, **filter):
+    """Gegenstück zu db_pg.zaehle_leads - dort spart es Übertragungsvolumen,
+    hier ist es einfach die schnellere Abfrage."""
+    filter.pop("sortierung", None)
+    zeilen = leads(conn, spalten=["id"], **filter)
+    return len(zeilen)
 
 
 def faellige_wiedervorlagen(conn):
@@ -321,6 +358,21 @@ def entwuerfe(conn, lead_id=None, kanal=None):
         sql += " WHERE " + " AND ".join(bedingungen)
     sql += " ORDER BY erstellt_am DESC"
     return conn.execute(sql, werte).fetchall()
+
+
+KANAELE_STANDARD = ("email", "dm", "telefon")
+
+
+def kanaele_je_lead(conn, kanaele=KANAELE_STANDARD):
+    """lead_id -> Menge der Kanäle, für die schon ein Entwurf da ist.
+    Gegenstück zu db_pg.kanaele_je_lead; siehe dort, warum es das gibt."""
+    ergebnis = {}
+    for zeile in conn.execute(
+        "SELECT lead_id, kanal FROM entwuerfe WHERE COALESCE(text, '') != ''"
+    ):
+        if zeile["kanal"] in kanaele:
+            ergebnis.setdefault(zeile["lead_id"], set()).add(zeile["kanal"])
+    return ergebnis
 
 
 def sperre(conn, muster, grund=None):
@@ -454,6 +506,16 @@ def gmail_zahlen(conn, min_score, erledigt_status):
         "ohne_text": zaehle("AND l.gmail_am IS NULL AND l.id NOT IN "
                             "(SELECT lead_id FROM entwuerfe WHERE kanal = 'email')"),
     }
+
+
+def gmail_abgleich_kandidaten(conn):
+    """Gegenstück zu db_pg.gmail_abgleich_kandidaten; siehe dort."""
+    return conn.execute(
+        """SELECT id, email, status, kontaktversuche, gmail_am, gmail_gesendet_am
+           FROM leads
+           WHERE status != 'gesperrt' AND COALESCE(email, '') != ''
+             AND (gmail_am IS NULL OR gmail_gesendet_am IS NULL)"""
+    ).fetchall()
 
 
 def anzahl_leads(conn):

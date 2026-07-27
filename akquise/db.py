@@ -33,17 +33,21 @@ if BACKEND == "supabase":
     from .db_pg import *          # noqa: F401,F403
     from .db_pg import (          # noqa: F401  - ausdrücklich, damit klar ist, was gebraucht wird
         STATUS_REIHENFOLGE, aktualisiere_lead, aktualisiere_viele, anzahl_leads, entwuerfe, entwuerfe_frisch_seit,
-        faellige_wiedervorlagen, gmail_kandidaten, heute, hole_lead, in_tagen,
-        initialisiere, ist_gesperrt, jetzt, kontakte, lade_json, leads,
+        faellige_wiedervorlagen, gmail_abgleich_kandidaten, gmail_kandidaten,
+        heute, hole_lead, in_tagen,
+        initialisiere, ist_gesperrt, jetzt, kanaele_je_lead, kontakte, lade_json, leads,
         loesche_entwurf, markiere_gmail, protokolliere_kontakt, speichere_entwurf,
         speichere_lead, sperre, sperrliste, statistik, verbinde, gmail_zahlen,
+        zaehle_leads,
     )
 else:
     from .db_sqlite import *      # noqa: F401,F403
     from .db_sqlite import (      # noqa: F401
         STATUS_REIHENFOLGE, aktualisiere_lead, aktualisiere_viele, anzahl_leads, entwuerfe, entwuerfe_frisch_seit,
-        faellige_wiedervorlagen, gmail_kandidaten, heute, hole_lead, in_tagen,
-        initialisiere, ist_gesperrt, jetzt, kontakte, lade_json, leads,
+        faellige_wiedervorlagen, gmail_abgleich_kandidaten, gmail_kandidaten,
+        heute, hole_lead, in_tagen,
+        initialisiere, ist_gesperrt, jetzt, kanaele_je_lead, kontakte, lade_json, leads,
         loesche_entwurf, markiere_gmail, protokolliere_kontakt, speichere_entwurf,
         speichere_lead, sperre, sperrliste, statistik, verbinde, gmail_zahlen,
+        zaehle_leads,
     )

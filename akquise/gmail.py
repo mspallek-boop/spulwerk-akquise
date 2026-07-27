@@ -36,6 +36,7 @@ ERLEDIGT_STATUS = (
 
 EMAIL_MUSTER = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
+
 # Textstellen, die nie in einer echten Mail stehen duerfen. Das Modell hat
 # sowas vereinzelt geliefert: "Guten Tag Frau/Herr [Name]," oder eine frei
 # erfundene Domain. Solche Entwuerfe werden verworfen und in der naechsten
@@ -161,7 +162,7 @@ def abgleich(conn, cfg=None):
     gesendet_adressen = daten["gesendet"]
 
     neu_entwurf, neu_gesendet = [], []
-    for zeile in db.leads(conn):
+    for zeile in db.gmail_abgleich_kandidaten(conn):
         adresse = (zeile["email"] or "").strip().lower()
         if not adresse:
             continue

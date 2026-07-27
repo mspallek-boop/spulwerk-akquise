@@ -74,7 +74,8 @@ Zwei austauschbare Datenschichten mit gleicher Schnittstelle:
 
 Der Nachschub-Lauf in GitHub Actions (`.github/workflows/nachschub.yml`) arbeitet
 auf Supabase, weil ein Cloud-Läufer keine Platte behält. Nötige Secrets:
-`GROQ_API_KEY`, `GMAIL_APP_PASSWORT`, `SUPABASE_SERVICE_KEY`.
+`GROQ_API_KEY`, `GMAIL_APP_PASSWORT`, `SUPABASE_SERVICE_KEY`. Der Portal-Sync
+entfällt dort — die Portal-Datenbank *ist* schon die Arbeitsdatenbank.
 
 ## Postfach
 
@@ -92,9 +93,66 @@ werden.
 
 ## Nachschub und Gmail-Entwürfe
 
-Der eingerichtete Zeitplan startet **täglich um 20:00 Uhr** einen `sweep`
-(`caffeinate -i` hält den Mac dabei wach). Am Ende schreibt der Sweep die
-fälligen E-Mail-Entwürfe nach `export/gmail-warteschlange.json`.
+In der Cloud läuft der Nachschub **rund um die Uhr**: stündlich ein `sweep` von
+knapp 50 Minuten (`.github/workflows/nachschub.yml`). Ein `concurrency`-Riegel
+verhindert, dass sich zwei Läufe überschneiden.
+
+Was den Durchsatz begrenzt, ist **nicht** der Takt, sondern Groqs Tages-Token-
+budget: 200.000 Tokens, rund 4.700 pro Lead → **etwa 42 betextete Leads am Tag**,
+egal wie oft gestartet wird. Ist es aufgebraucht, endet das Texten sauber
+(`TagesbudgetErschoepft`) und der Lauf macht mit dem weiter, was **keine Tokens
+kostet**: Websites anreichern. Genau das füllt den Vorrat, aus dem der nächste
+Tag seine 42 nimmt. Mehr Tempo gäbe es nur über Groqs Dev Tier.
+
+Auf dem Mac startet der eingerichtete Zeitplan stattdessen **täglich um 20:00 Uhr**
+einen `sweep` (`caffeinate -i` hält den Rechner dabei wach). Am Ende schreibt der
+Sweep die fälligen E-Mail-Entwürfe nach `export/gmail-warteschlange.json`.
+
+### Die Gratis-Kontingente, an denen alles hängt
+
+| Dienst | Freigrenze | Was wir davon brauchen |
+|---|---|---|
+| **Groq** (gpt-oss-120b) | 200.000 Tokens/Tag, 1.000 Anfragen/Tag, 8.000 Tokens/Min | Tokens sind der echte Deckel: ~42 Leads/Tag. Anfragen: ~130/Tag |
+| **Supabase** | 5 GB Übertragung/Monat, 500 MB Datenbank | 1,1 MB je Lauf × 24 = **~0,8 GB/Monat**; Portal je nach Nutzung |
+| **GitHub Actions** | unbegrenzt für öffentliche Repos | 24 × ~50 Min/Tag |
+| **Gmail (IMAP)** | 2,5 GB Download/Tag | nur die `To:`-Kopfzeilen, ~50 Sitzungen/Tag |
+| **Overpass (OSM)** | Fair Use | Suche läuft nur unter `SUCHE_AB_VORRAT` (300) |
+| **Netlify** (Portal) | 100 GB Traffic, 125k Function-Aufrufe/Monat | im Promillebereich |
+
+**Supabase ist die empfindlichste Stelle.** Vor dem 27.07.2026 zog ein Lauf rund
+40 MB, weil mehrere Schritte `select=*` über alle 10.389 Leads machten — bei
+stündlichem Takt wären das 29 GB im Monat. Die Regeln seither:
+
+* **Nur die Spalten holen, die gebraucht werden** (`db.leads(spalten=…)`). Die
+  JSON-Spalten `recherche` und `entwuerfe` sind zusammen zwei Drittel des
+  Gewichts. Für ein reines Ja/Nein reicht der JSON-Pfad
+  (`entwuerfe->email->>quelle`, 13× kleiner) — das gilt auch im Portal.
+* **Zählen statt holen** (`db.zaehle_leads`) — PostgREST liefert die Anzahl im
+  Kopf, der Rumpf bleibt leer.
+* **Serverseitig filtern** (`textbar_ab`, `ohne_entwurf_kanal`): 197 Zeilen
+  statt 2.757, um 42 Leads zu texten.
+* **Nur bewerten, was sich gerührt hat** (`score.bewerte_alle(seit=…)`).
+* **Zweistufig holen**: erst die schmale Auswahl, den vollen Datensatz erst für
+  den Lead, der wirklich drankommt.
+
+Nach jeder grösseren Änderung nachmessen — `urllib.request.urlopen` umhängen und
+die Bytes je Anfrage zählen (Beispielskript in der Projektgeschichte). Ein Lauf
+sollte deutlich unter 2 MB bleiben.
+
+### Zwei Sicherungen, die aus dem 27.07.2026 stammen
+
+An dem Tag lief ein Sweep acht Minuten „erfolgreich" durch und hinterließ für
+80 Leads nur den Telefonleitfaden aus der Vorlage — jeder Groq-Aufruf war an
+einem abgelaufenen Schlüssel gescheitert, gemeldet hat es niemand. Schlimmer:
+weil die Kandidatensuche „Lead hat noch **gar keinen** Entwurf" fragte, waren
+diese 80 damit dauerhaft aussortiert.
+
+* `outreach.erzeuge` fragt jetzt **je Kanal** („fehlt E-Mail oder DM?"), nicht
+  mehr „gibt es irgendeinen Entwurf?".
+* Kommt bei `KI_AUSFALL_NACH` Leads in Folge kein einziger KI-Text durch, bricht
+  der Lauf mit klarer Meldung ab, statt reihenweise Vorlagen zu produzieren.
+  Der Workflow prüft Groq zusätzlich mit einem echten Testaufruf, bevor er
+  überhaupt anfängt.
 
 Gmail-Entwürfe kann das Skript nicht selbst anlegen – das macht der geplante
 Claude-Task **„spulwerk-gmail-entwuerfe"** (täglich ~23:09, Gmail-Connector).

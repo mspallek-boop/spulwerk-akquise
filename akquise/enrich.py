@@ -249,17 +249,27 @@ def analysiere_website(url, robots_beachten=True):
 
 
 def reichere_an(limit=None, pause=1.5, robots_beachten=True, alle=False,
-                ausgabe=print):
-    """Analysiert Websites aller (noch nicht angereicherten) Leads."""
+                ausgabe=print, weiter=None):
+    """Analysiert Websites aller (noch nicht angereicherten) Leads.
+
+    `weiter` ist ein Rückruf, der False liefert, wenn Schluss sein soll - damit
+    hält sich der Dauerlauf an sein Zeitfenster, statt bis zum Ende der Liste
+    durchzuziehen.
+    """
     conn = db.verbinde()
     kandidaten = db.leads(
-        conn, nur_unangereichert=not alle, limit=limit, sortierung="neu"
+        conn, nur_unangereichert=not alle, nur_mit_website=True,
+        limit=limit, sortierung="neu",
     )
-    kandidaten = [k for k in kandidaten if k["website"]]
 
     kennzahlen = {"geprueft": 0, "erreichbar": 0, "emails": 0, "instagram": 0}
     for lead in kandidaten:
-        ausgabe("  [%d] %s -> %s" % (lead["id"], lead["name"][:38], lead["website"]))
+        if weiter is not None and not weiter():
+            ausgabe("  Zeitfenster zu Ende - Rest kommt im nächsten Lauf.")
+            break
+        # %s, nicht %d: in der Cloud sind die Lead-IDs UUIDs. Mit %d ist das
+        # Anreichern dort beim allerersten Lead abgestuerzt.
+        ausgabe("  [%s] %s -> %s" % (lead["id"], lead["name"][:38], lead["website"]))
         befund = analysiere_website(lead["website"], robots_beachten)
         kennzahlen["geprueft"] += 1
 
